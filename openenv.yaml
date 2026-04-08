@@ -1,0 +1,83 @@
+name: MigrateEnv
+version: "1.0.0"
+description: >
+  An OpenEnv-compliant reinforcement learning environment for evaluating
+  LLM agent performance on real-world PostgreSQL database schema migrations
+  using the Northwind dataset.
+
+interface:
+  reset:
+    method: POST
+    path: /reset
+    body:
+      task_id: string
+    returns: observation
+
+  step:
+    method: POST
+    path: /step
+    body:
+      sql: string
+    returns:
+      observation: object
+      reward: float
+      done: boolean
+      info: object
+
+  state:
+    method: GET
+    path: /state
+    returns: env_state
+
+endpoints:
+  - GET /health
+  - GET /tasks
+  - GET /grader
+  - GET /baseline
+
+tasks:
+  - id: easy
+    difficulty: easy
+    description: Add loyalty_tier column + CHECK constraint to customers table
+    max_steps: 10
+    target_reward: 0.95
+
+  - id: medium
+    difficulty: medium
+    description: Normalize products table by splitting pricing into product_pricing
+    max_steps: 20
+    target_reward: 0.95
+
+  - id: hard
+    difficulty: hard
+    description: Multi-table migration on orders — add status column, composite index, and audit_log table
+    max_steps: 30
+    target_reward: 0.95
+
+database:
+  engine: postgresql
+  dataset: Northwind
+  version: "PostgreSQL 15"
+  schema_source: db/northwind.sql
+  reset_strategy: full_reload
+
+grader:
+  weights:
+    schema_match: 0.35
+    data_integrity: 0.30
+    relational_integrity: 0.20
+    step_efficiency: 0.10
+    time_score: 0.05
+  penalties:
+    invalid_sql: -0.05
+    redundant_step: -0.02
+  score_range: [0.0, 1.0]
+
+baseline:
+  script: inference.py
+  model: Qwen/Qwen2.5-72B-Instruct
+  env_vars:
+    HF_TOKEN: "Your HuggingFace / API key"
+    API_BASE_URL: "LLM endpoint (default: https://router.huggingface.co/v1)"
+    MODEL_NAME: "Model identifier (default: Qwen/Qwen2.5-72B-Instruct)"
+    DATABASE_URL: "PostgreSQL connection string"

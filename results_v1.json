@@ -1,0 +1,73 @@
+[
+  {
+    "task_id": "easy",
+    "label": "Task 1 \u2014 Add column (easy)",
+    "score": 0.9979,
+    "breakdown": {
+      "total": 0.9979,
+      "schema_match": 1.0,
+      "data_integrity": 1.0,
+      "fk_integrity": 1.0,
+      "efficiency": 1.0
+    },
+    "steps_used": 3,
+    "elapsed": 15.6,
+    "success": true,
+    "difficulty": "easy",
+    "actions": [
+      "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'customers';",
+      "ALTER TABLE customers ADD COLUMN loyalty_tier VARCHAR(20) DEFAULT 'standard' NOT NULL;",
+      "ALTER TABLE customers ADD CONSTRAINT chk_loyalty_tier CHECK (loyalty_tier IN ('standard', 'silver', 'gold', 'platinum'));"
+    ]
+  },
+  {
+    "task_id": "medium",
+    "label": "Task 2 \u2014 Table split (medium)",
+    "score": 0.968,
+    "breakdown": {
+      "total": 0.968,
+      "schema_match": 0.9231,
+      "data_integrity": 1.0,
+      "fk_integrity": 1.0,
+      "efficiency": 1.0
+    },
+    "steps_used": 7,
+    "elapsed": 32.9,
+    "success": true,
+    "difficulty": "medium",
+    "actions": [
+      "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'products';",
+      "CREATE TABLE product_pricing (product_id SMALLINT PRIMARY KEY, unit_price REAL, units_in_stock SMALLINT, units_on_order SMALLINT, reorder_level SMALLINT, discontinued INTEGER, CONSTRAINT fk_pp_product FOREIGN KEY (product_id) REFERENCES products(product_id))",
+      "INSERT INTO product_pricing SELECT product_id, unit_price, units_in_stock, units_on_order, reorder_level, discontinued FROM products",
+      "ALTER TABLE products DROP COLUMN unit_price",
+      "ALTER TABLE products DROP COLUMN units_in_stock",
+      "ALTER TABLE products DROP COLUMN units_on_order",
+      "ALTER TABLE products DROP COLUMN reorder_level"
+    ]
+  },
+  {
+    "task_id": "hard",
+    "label": "Task 3 \u2014 Multi-table migration (hard) \u26a0",
+    "score": 0.9892,
+    "breakdown": {
+      "total": 0.9892,
+      "schema_match": 1.0,
+      "data_integrity": 1.0,
+      "fk_integrity": 1.0,
+      "efficiency": 1.0
+    },
+    "steps_used": 7,
+    "elapsed": 67.2,
+    "success": true,
+    "difficulty": "hard",
+    "actions": [
+      "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'orders';",
+      "ALTER TABLE orders ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending';",
+      "UPDATE orders SET order_status = CASE WHEN shipped_date IS NULL THEN 'pending' ELSE 'shipped' END;",
+      "ALTER TABLE orders ADD CONSTRAINT chk_order_status CHECK (order_status IN ('pending', 'shipped', 'cancelled'));",
+      "CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date);",
+      "CREATE TABLE audit_log (log_id SERIAL PRIMARY KEY, table_name VARCHAR(50), operation VARCHAR(20), performed_at TIMESTAMP DEFAULT NOW(), note TEXT);",
+      "INSERT INTO audit_log (table_name, operation, note) VALUES ('orders', 'MIGRATION', 'Added order_status column, status index, and audit_log');"
+    ]
+  }
+]

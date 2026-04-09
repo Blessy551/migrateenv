@@ -51,22 +51,24 @@ class MediumTask(BaseTask):
 
     def get_hint(self) -> str:
         return (
-            "IMPORTANT: You are on SQLite. ALTER TABLE ... DROP COLUMN is unreliable on older SQLite versions. "
-            "Use the table-rebuild pattern to remove columns safely. "
-            "Step 1: Inspect PRAGMA table_info('products') to get all current columns. "
-            "Step 2: CREATE TABLE product_pricing ("
+            "You are on PostgreSQL (Supabase). PostgreSQL supports ALTER TABLE ... DROP COLUMN natively — "
+            "no table rebuild needed. "
+            "Step 1: CREATE the new table with FK: "
+            "CREATE TABLE product_pricing ("
             "product_id INTEGER PRIMARY KEY, "
             "unit_price REAL, units_in_stock INTEGER, units_on_order INTEGER, "
             "reorder_level INTEGER, discontinued INTEGER, "
-            "FOREIGN KEY (product_id) REFERENCES products(product_id)); "
-            "Step 3: INSERT INTO product_pricing SELECT product_id, unit_price, units_in_stock, "
+            "CONSTRAINT fk_product_pricing_product FOREIGN KEY (product_id) REFERENCES products(product_id)); "
+            "Step 2: Populate it: "
+            "INSERT INTO product_pricing SELECT product_id, unit_price, units_in_stock, "
             "units_on_order, reorder_level, discontinued FROM products; "
-            "Step 4: CREATE TABLE products_new with ALL original products columns EXCEPT "
-            "unit_price, units_in_stock, units_on_order, reorder_level, discontinued. "
-            "Step 5: INSERT INTO products_new SELECT <remaining_cols> FROM products; "
-            "Step 6: DROP TABLE products; "
-            "Step 7: ALTER TABLE products_new RENAME TO products; "
-            "Always verify row counts with SELECT COUNT(*) after each major step."
+            "Step 3: Drop each pricing column from products one at a time: "
+            "ALTER TABLE products DROP COLUMN unit_price; "
+            "ALTER TABLE products DROP COLUMN units_in_stock; "
+            "ALTER TABLE products DROP COLUMN units_on_order; "
+            "ALTER TABLE products DROP COLUMN reorder_level; "
+            "ALTER TABLE products DROP COLUMN discontinued; "
+            "Step 4: Verify: SELECT COUNT(*) FROM products; (expect 77) and SELECT COUNT(*) FROM product_pricing; (expect 77)"
         )
 
     def get_target_schema_requirements(self):

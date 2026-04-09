@@ -35,9 +35,8 @@ COPY baseline.py .
 COPY openenv.yaml .
 COPY inference.py .
 
-# Environment defaults
-# Override DATABASE_URL to use PostgreSQL in self-hosted deployments
-ENV DATABASE_URL=sqlite:///./northwind.db
+# DATABASE_URL must be set at runtime (Supabase connection string).
+# No SQLite fallback — this build targets Supabase Postgres only.
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 

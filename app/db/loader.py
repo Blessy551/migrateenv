@@ -1,189 +1,126 @@
 """
-Database loader — drops and recreates the Northwind schema from the SQL dump.
-Supports both PostgreSQL (full psycopg2 path) and SQLite (HF Spaces fallback).
+Database loader — resets the Northwind schema by running the SQL dump
+directly against the existing database (no DROP/CREATE DATABASE).
+
+Supabase free tier does NOT allow DROP DATABASE or CREATE DATABASE via
+the pooler. The northwind.sql file already contains DROP TABLE IF EXISTS
+statements for every Northwind table, so we just need to:
+
+  1. Drop task-created tables (product_pricing, audit_log, etc.)
+  2. Execute northwind.sql (which drops + recreates all Northwind tables)
 """
 import os
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 SQL_DUMP_PATH = Path(__file__).parent.parent.parent / "db" / "northwind.sql"
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./northwind.db"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is required (Supabase connection string)"
+    )
 
-
-def _is_sqlite(url: str) -> bool:
-    return url.startswith("sqlite")
+# Extra tables created by tasks that must be cleaned up on reset
+_TASK_EXTRA_TABLES = [
+    "product_pricing",
+    "audit_log",
+]
 
 
 def _parse_dsn(url: str) -> dict:
     """Parse postgresql://user:pass@host:port/dbname into components."""
-    from urllib.parse import urlparse
-
     p = urlparse(url)
     return {
         "host": p.hostname or "localhost",
         "port": p.port or 5432,
         "user": p.username or "postgres",
         "password": p.password or "postgres",
-        "dbname": p.path.lstrip("/") or "northwind",
+        "dbname": p.path.lstrip("/") or "postgres",
     }
 
 
-def _initialize_sqlite(sql_path: Path, database_url: str) -> None:
-    import shutil
-    from urllib.parse import urlparse
-
-    db_file = urlparse(database_url).path.lstrip("/")
-    source_db = Path(__file__).parent / "northwind.db"
-
-    if not source_db.exists():
-        raise FileNotFoundError(
-            f"northwind.db not found at {source_db}. Please add it."
-        )
-
-    if os.path.exists(db_file):
-        os.remove(db_file)
-
-    shutil.copy(source_db, db_file)
-
-    logger.info("SQLite DB copied successfully (prebuilt)")
-
-
-def _get_admin_conn(dsn: dict):
+def _connect(dsn: dict):
+    """Open a psycopg2 connection with SSL (required by Supabase)."""
     import psycopg2
-    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-
-    conn = psycopg2.connect(
-        host=dsn["host"],
-        port=dsn["port"],
-        user=dsn["user"],
-        password=dsn["password"],
-        dbname="postgres",
-    )
-    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-    return conn
-
-
-def _load_sql_file_pg(sql_path: Path, dsn: dict) -> None:
-    import psycopg2
-
-    conn = psycopg2.connect(
+    return psycopg2.connect(
         host=dsn["host"],
         port=dsn["port"],
         user=dsn["user"],
         password=dsn["password"],
         dbname=dsn["dbname"],
+        sslmode="require",
+        connect_timeout=30,
     )
-    conn.autocommit = False
 
+
+def initialize_db(
+    sql_path: Path = SQL_DUMP_PATH,
+    database_url: str = DATABASE_URL,
+) -> None:
+    """
+    Reset the database to a clean Northwind state.
+
+    Works on Supabase free tier (no superuser / DROP DATABASE needed):
+      - Drops task-created tables first (CASCADE to remove FKs)
+      - Executes the northwind.sql dump which already contains
+        DROP TABLE IF EXISTS for all Northwind tables
+    """
+    dsn = _parse_dsn(database_url)
+
+    # Step 1 — drop task-specific tables not in northwind.sql
+    conn = _connect(dsn)
     try:
-        with open(sql_path, "r", encoding="utf-8") as f:
-            sql_content = f.read()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for table in _TASK_EXTRA_TABLES:
+                try:
+                    cur.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
+                    logger.info("Dropped task table: %s", table)
+                except Exception as drop_err:
+                    logger.warning("Could not drop %s: %s", table, drop_err)
+    finally:
+        conn.close()
 
+    # Step 2 — run the full northwind.sql dump
+    if not sql_path.exists():
+        raise FileNotFoundError(f"Northwind SQL dump not found at: {sql_path}")
+
+    with open(sql_path, "r", encoding="utf-8") as f:
+        sql_content = f.read()
+
+    conn = _connect(dsn)
+    conn.autocommit = False
+    try:
         with conn.cursor() as cur:
             cur.execute(sql_content)
-
         conn.commit()
-        logger.info("SQL dump executed and committed.")
-
+        logger.info("Northwind SQL dump executed and committed.")
     except Exception as e:
         conn.rollback()
-        logger.error(f"Failed to load SQL dump: {e}")
+        logger.error("Failed to load SQL dump: %s", e)
         raise
-
     finally:
         conn.close()
 
 
-def initialize_db(sql_path: Path = SQL_DUMP_PATH, database_url: str = DATABASE_URL) -> None:
-    if _is_sqlite(database_url):
-        _initialize_sqlite(sql_path, database_url)
-        return
-
-    import psycopg2
-    from psycopg2 import sql as pg_sql
-
-    dsn = _parse_dsn(database_url)
-    db_name = dsn["dbname"]
-
-    admin_conn = _get_admin_conn(dsn)
-
-    try:
-        cur = admin_conn.cursor()
-
-        cur.execute(
-            pg_sql.SQL(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = %s AND pid <> pg_backend_pid()"
-            ),
-            [db_name],
-        )
-
-        cur.execute(pg_sql.SQL("DROP DATABASE IF EXISTS {}").format(pg_sql.Identifier(db_name)))
-        cur.execute(pg_sql.SQL("CREATE DATABASE {}").format(pg_sql.Identifier(db_name)))
-
-        cur.close()
-
-    finally:
-        admin_conn.close()
-
-    if not sql_path.exists():
-        raise FileNotFoundError(f"Northwind SQL dump not found at: {sql_path}")
-
-    _load_sql_file_pg(sql_path, dsn)
-
-
 def get_table_row_counts(database_url: str = DATABASE_URL) -> dict:
-    if _is_sqlite(database_url):
-        import sqlite3
-        from urllib.parse import urlparse
-
-        db_file = urlparse(database_url).path.lstrip("/")
-        conn = sqlite3.connect(db_file)
-
-        try:
-            cur = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
-            tables = [row[0] for row in cur.fetchall()]
-
-            counts = {}
-            for table in tables:
-                row = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
-                counts[table] = row[0]
-
-            return counts
-
-        finally:
-            conn.close()
-
-    import psycopg2
     dsn = _parse_dsn(database_url)
-    conn = psycopg2.connect(**dsn)
-
+    conn = _connect(dsn)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT tablename FROM pg_tables
-                WHERE schemaname = 'public'
-                ORDER BY tablename
-                """
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname = 'public' ORDER BY tablename"
             )
-
             tables = [row[0] for row in cur.fetchall()]
             counts = {}
-
             for table in tables:
                 cur.execute(f'SELECT COUNT(*) FROM "{table}"')
                 counts[table] = cur.fetchone()[0]
-
         return counts
-
     finally:
         conn.close()

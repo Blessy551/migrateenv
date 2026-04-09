@@ -40,15 +40,14 @@ class EasyTask(BaseTask):
 
     def get_hint(self) -> str:
         return (
-            "SQLite does not support ALTER TABLE ... ADD CONSTRAINT. "
-            "You must rebuild the table to add a CHECK constraint. "
-            "Step 1: Inspect PRAGMA table_info('customers') to get all columns. "
-            "Step 2: CREATE TABLE customers_new with all original columns PLUS "
-            "loyalty_tier VARCHAR(20) DEFAULT 'standard' NOT NULL and "
-            "CHECK (loyalty_tier IN ('standard','silver','gold','platinum')). "
-            "Step 3: INSERT INTO customers_new SELECT <all_original_cols>, 'standard' FROM customers. "
-            "Step 4: DROP TABLE customers. "
-            "Step 5: ALTER TABLE customers_new RENAME TO customers."
+            "You are on PostgreSQL (Supabase). ALTER TABLE supports ADD COLUMN and ADD CONSTRAINT natively — "
+            "no table rebuild needed. "
+            "Step 1: Add the column: "
+            "ALTER TABLE customers ADD COLUMN loyalty_tier VARCHAR(20) NOT NULL DEFAULT 'standard'; "
+            "Step 2: Add the CHECK constraint: "
+            "ALTER TABLE customers ADD CONSTRAINT chk_loyalty_tier "
+            "CHECK (loyalty_tier IN ('standard', 'silver', 'gold', 'platinum')); "
+            "Step 3: Verify with SELECT COUNT(*) FROM customers; (expect 91)"
         )
 
     def get_target_schema_requirements(self):

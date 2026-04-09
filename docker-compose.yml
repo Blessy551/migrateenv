@@ -1,59 +1,36 @@
 version: "3.9"
 
-services:
-  # ----------------------------------------------------------------
-  # PostgreSQL 15 database
-  # ----------------------------------------------------------------
-  db:
-    image: postgres:15-alpine
-    container_name: migrateenv_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres          # admin DB; northwind is created by the app on reset
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+# -----------------------------------------------------------------------
+# MigrateEnv — Supabase edition
+#
+# The local postgres service has been REMOVED. Set DATABASE_URL in your
+# .env file to your Supabase Session Mode pooler connection string:
+#
+#   postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
+#
+# Supabase free tier notes:
+#   • Use the SESSION pooler (port 5432), not Transaction (port 6543)
+#   • SSL is enforced automatically via the connection string
+#   • No DROP DATABASE / CREATE DATABASE is needed (loader handles this)
+# -----------------------------------------------------------------------
 
-  # ----------------------------------------------------------------
-  # MigrateEnv FastAPI application
-  # ----------------------------------------------------------------
+services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: migrateenv_app
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/northwind
-      ADMIN_DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
-      HF_TOKEN: ${HF_TOKEN:-}
-      API_BASE_URL: ${API_BASE_URL:-https://router.huggingface.co/v1}
-      MODEL_NAME: ${MODEL_NAME:-Qwen/Qwen2.5-72B-Instruct}
       PYTHONUNBUFFERED: "1"
     ports:
-      - "8000:8000"
-    volumes:
-      # Mount db folder so SQL dump can be hot-swapped during dev
-      - ./db:/app/db:ro
+      - "7860:7860"
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "python", "-c",
+             "import httpx; httpx.get('http://localhost:7860/health').raise_for_status()"]
+      interval: 15s
+      timeout: 10s
       retries: 5
-      start_period: 20s
-
-volumes:
-  pgdata:
-    driver: local
+      start_period: 30s

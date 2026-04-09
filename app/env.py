@@ -91,10 +91,10 @@ class MigrateEnv:
 
         logger.info(f"[ENV] Resetting with task_id='{task_id}'")
 
-        # --- Reload real Northwind DB ---
+        # --- Reload Northwind tables (Supabase: no DROP/CREATE DATABASE) ---
         initialize_db(database_url=DATABASE_URL)
 
-        # --- Reconnect engine after DB drop/recreate ---
+        # Re-bind engine so any stale connections are cleared
         reconnect(DATABASE_URL)
         self._engine = get_engine()
 

@@ -13,7 +13,6 @@ _BLOCKED_PATTERNS = [
     r"\bDROP\s+DATABASE\b",
     r"\bDROP\s+SCHEMA\b",
     r"\bTRUNCATE\b",           # no TRUNCATE (use task-scoped resets)
-    r"\bDROP\s+TABLE\b(?!\s+(IF\s+EXISTS\s+)?product_pricing\b)",  # allow task-specific DROP
     r"\bSHUTDOWN\b",
     r"\bPG_TERMINATE_BACKEND\b",
     r"\bCOPY\b.*\bTO\b",       # no file exports

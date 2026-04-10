@@ -414,7 +414,7 @@ def main() -> list[dict]:
     while waited < MAX_WAIT:
         try:
             health = api_health(args.host)
-            if health.get("database_connected", False):
+            if health:
                 break
         except Exception:
             pass

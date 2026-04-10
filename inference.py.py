@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
 """
-MigrateEnv Inference Script
+MigrateEnv Inference Script (PostgreSQL-Aware)
 ============================
-Runs the MigrateEnv baseline agent against all 3 tasks using the OpenAI client.
+FIXED VERSION: Uses PostgreSQL syntax, better feedback loop.
+
+Key improvements:
+1. System prompt updated for PostgreSQL (not SQLite)
+2. Feedback loop improved
+3. Better error messages
 
 Required environment variables:
     API_BASE_URL   LLM endpoint (default: https://api.openai.com/v1)
-    MODEL_NAME     Model identifier (default: gpt-4.1-mini)
+    MODEL_NAME     Model identifier (default: gpt-4-mini)
     HF_TOKEN       API key (mandatory — no default)
 
-Stdout format (STRICT — exactly these three line types, nothing else):
-    [START] task=<id> env=migrateenv model=<model>
-    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
-
-All debug/display output is fully suppressed — only spec lines reach stdout.
-
 Usage:
-    HF_TOKEN=your_key python inference.py
-    HF_TOKEN=your_key python inference.py --host http://localhost:8000 --output results.json
+    python inference_FIXED.py --host https://your-space.hf.space --debug
 """
 from __future__ import annotations
 import os
@@ -27,6 +24,7 @@ import time
 import json
 import argparse
 import logging
+import traceback
 
 import httpx
 from openai import OpenAI
@@ -35,15 +33,15 @@ from rich.console import Console
 from dotenv import load_dotenv
 load_dotenv()
 
-# Silence all loggers — nothing must leak to stderr during evaluation
+# Silence all loggers
 logging.disable(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 
-# Summary table only — written to stderr AFTER all tasks complete
+# Summary table only
 console = Console(stderr=True)
 
 # ---------------------------------------------------------------------------
-# Environment variables — spec-required
+# Environment variables
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
@@ -52,9 +50,6 @@ HF_TOKEN     = os.getenv("HF_TOKEN")
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
 
-# ---------------------------------------------------------------------------
-# OpenAI client — mandatory, no alternative SDKs
-# ---------------------------------------------------------------------------
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=HF_TOKEN,
@@ -66,6 +61,7 @@ client = OpenAI(
 DEFAULT_HOST      = os.getenv("MIGRATEENV_HOST", "http://localhost:8000")
 SUCCESS_THRESHOLD = float(os.environ.get("SUCCESS_THRESHOLD", "0.9"))
 REQUEST_TIMEOUT   = 120.0
+LLM_TIMEOUT       = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 RATE_LIMIT_SLEEP  = 2.0
 BENCHMARK         = "migrateenv"
 
@@ -92,51 +88,67 @@ TASKS = [
 ]
 
 # ---------------------------------------------------------------------------
-# LLM system prompt
+# LLM system prompt (FIXED FOR POSTGRESQL)
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a PostgreSQL database migration engineer operating inside MigrateEnv.
+SYSTEM_PROMPT = """You are a PostgreSQL database migration engineer operating inside MigrateEnv (Supabase).
 
 You will receive an observation containing:
   - task_description: what needs to be migrated
   - hint: suggested SQL steps
   - current_schema: the live database schema
   - row_counts: current row counts per table
+  - grader_feedback: what's still missing (if any)
 
 Your goal is to migrate the Northwind database to match the task requirements without data loss.
 
 Always respond with a single JSON action using this exact format:
 {"action_type": "inspect" | "execute" | "done", "sql": "...", "inspect_query": "..."}
 
-CRITICAL RULES:
-- You are working with PostgreSQL (Supabase).
-- You MAY use native PostgreSQL features like `ALTER TABLE ... ADD CONSTRAINT`, `ALTER TABLE ... DROP COLUMN`, `SERIAL`, `TIMESTAMP`, etc.
-- No table rebuilds are necessary for adding constraints or dropping columns.
-- Table names and column names are case-sensitive. Use correct casing.
-- Do NOT use TRUNCATE, DROP DATABASE, or DROP SCHEMA.
+CRITICAL RULES (PostgreSQL/Supabase):
+- You are working with PostgreSQL (Supabase), NOT SQLite.
+- PostgreSQL DOES support:
+  - information_schema.tables, information_schema.columns
+  - ALTER TABLE ... ADD CONSTRAINT
+  - ALTER TABLE ... ADD CHECK
+  - SERIAL (auto-incrementing)
+  - CASCADE for foreign keys
+  - Table names are case-sensitive (use "CamelCase" in double quotes if needed)
+
+WHAT TO AVOID (these are SQLite features, NOT PostgreSQL):
+- PRAGMA table_info() — does NOT exist in PostgreSQL
+- sqlite_master — does NOT exist in PostgreSQL
+- Use information_schema instead
+
+CORRECT POSTGRESQL SYNTAX EXAMPLES:
+  - List all tables: SELECT table_name FROM information_schema.tables WHERE table_schema='public'
+  - List columns: SELECT column_name, data_type, is_nullable FROM information_schema.columns 
+                   WHERE table_schema='public' AND table_name='orders'
+  - Add column: ALTER TABLE orders ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending'
+  - Add constraint: ALTER TABLE orders ADD CONSTRAINT check_status CHECK (order_status IN ('pending', 'shipped', 'done'))
 
 MANDATORY FIRST STEP:
-- You MUST ALWAYS start by inspecting the database schema.
-- First run:
-  SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+- You MUST ALWAYS start by inspecting the database.
+- First run: SELECT table_name FROM information_schema.tables WHERE table_schema='public'
+- Then inspect columns for relevant tables
 
-- Then inspect columns using:
-  SELECT column_name, data_type, character_maximum_length, is_nullable
-  FROM information_schema.columns 
-  WHERE table_schema = 'public' AND table_name = 'your_table_name';
+WORKFLOW:
+1. "inspect": run SELECT queries to understand current schema
+2. "execute": run DDL/DML (ALTER TABLE, CREATE TABLE, INSERT, UPDATE, etc.)
+3. "done": signal migration complete — ONLY after grader_feedback shows 0% issues
 
 Rules:
-- "inspect": run a read-only SQL query (SELECT) to understand current state — set inspect_query
-- "execute": run a migration SQL statement (ALTER TABLE, CREATE TABLE, UPDATE, CREATE INDEX, INSERT) — set sql
-- "done": signal that the migration is complete
-- One action per response. No explanation. Pure JSON only.
-- If an execute fails, correct it in the next step.
-- After completing all steps, verify your work with a SELECT before sending done.
+- One action per response. Pure JSON only — no explanation.
+- If execute fails, read the error and fix it in the next step.
+- If grader_feedback still shows missing items, keep executing more steps.
+- Do NOT use TRUNCATE, DROP DATABASE, or DROP SCHEMA.
+- Do NOT drop tables unless specifically required.
+- Always verify data integrity before marking done.
 
-STRATEGY:
-1. Inspect tables first (information_schema.tables)
-2. Inspect schema of relevant tables (information_schema.columns)
-3. Perform migration steps
-4. Verify results before finishing
+UNDERSTANDING GRADER FEEDBACK:
+- grader_feedback shows: "Schema incomplete (33% match) | Missing columns: order_status"
+- This means you need MORE steps to complete the migration
+- Keep iterating until the task requirement is met
+- Only send "done" when no issues remain
 """
 
 # ---------------------------------------------------------------------------
@@ -148,7 +160,6 @@ def api_reset(host: str, task_id: str) -> dict:
     r.raise_for_status()
     return r.json()
 
-
 def api_step(host: str, action: dict) -> dict:
     """Submit an action; maps action_type to the correct SQL field."""
     action_type = action.get("action_type", "execute")
@@ -156,25 +167,23 @@ def api_step(host: str, action: dict) -> dict:
         sql = action.get("sql", "SELECT 1")
     elif action_type == "inspect":
         sql = action.get("inspect_query", "SELECT 1")
-    else:  # done / noop / unknown — safe no-op
+    else:  # done / noop
         sql = "SELECT 1"
     r = httpx.post(f"{host}/step", json={"sql": sql}, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     return r.json()
-
 
 def api_health(host: str) -> dict:
     r = httpx.get(f"{host}/health", timeout=10.0)
     r.raise_for_status()
     return r.json()
 
-
 # ---------------------------------------------------------------------------
-# Helpers for spec-compliant field formatting
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _safe_action(action: dict) -> str:
-    """Return the full SQL as a single-line string (no truncation, no outer quotes)."""
+    """Return SQL as single-line string."""
     action_type = action.get("action_type", "execute")
     if action_type == "noop":
         return "noop"
@@ -183,47 +192,40 @@ def _safe_action(action: dict) -> str:
         or action.get("inspect_query")
         or action.get("action_type", "noop")
     )
-    # Collapse all whitespace variants to spaces — guarantees a single output line
     return raw.replace("\n", " ").replace("\r", " ").replace("\t", " ").strip()
 
-
 def _safe_error(error: str | None) -> str:
-    """Return a single-line error string, or 'null'."""
+    """Return error as single-line string."""
     if not error:
         return "null"
-    return error.replace("\n", " ").replace("\r", " ").strip()
-
+    return error.replace("\n", " ").replace('"', "'").strip()[:100]
 
 # ---------------------------------------------------------------------------
-# Agent loop for a single task
+# Task runner
 # ---------------------------------------------------------------------------
 
-def run_task(
-    host: str,
-    task: dict,
-) -> dict:
-    task_id    = task["id"]
-    max_steps  = task["max_steps"]
-    time_limit = task["time_limit"]
-    label      = task["label"]
+def run_task(host: str, task: dict) -> dict:
+    """Run a single task."""
+    task_id      = task["id"]
+    label        = task["label"]
+    max_steps    = task["max_steps"]
+    time_limit   = task["time_limit"]
 
     step_start       = time.time()
-    action_label     = "starting..."
     total_reward     = 0.0
-    prev_reward      = 0.0          # for computing per-step delta
+    prev_reward      = 0.0
     reward_breakdown = {}
     actions_taken    = []
-    step_rewards     = []           # per-step delta rewards
+    step_rewards     = []
     done             = False
     success          = False
     obs              = {}
 
-    # ── Reset environment ────────────────────────────────────────────────────
+    # Reset environment
     try:
         obs = api_reset(host, task_id)
         time.sleep(3)
     except Exception as e:
-        # Emit spec-compliant lines even on reset failure
         print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
         print(f"[END] success=false steps=0 rewards=0.00", flush=True)
         return {
@@ -233,7 +235,7 @@ def run_task(
             "error": str(e),
         }
 
-    # ── Episode start ─────────────────────────────────────────────────────────
+    # Episode start
     print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -245,14 +247,20 @@ def run_task(
             if elapsed > time_limit:
                 break
 
-            # Build observation — trim schema to focus tables only
+            # Build observation — include grader feedback!
             focus  = obs.get("focus_tables", [])
             schema = obs.get("current_schema", {})
             trimmed_schema = {t: v for t, v in schema.items() if t in focus} if focus else schema
             obs_trimmed = {**obs, "current_schema": trimmed_schema}
+            
+            # Include feedback so LLM knows what's missing
+            feedback = obs.get("grader_feedback", "")
+            if feedback:
+                obs_trimmed["grader_feedback"] = feedback
+            
             messages.append({"role": "user", "content": json.dumps(obs_trimmed)})
 
-            # ── LLM call ─────────────────────────────────────────────────────
+            # LLM call
             action = None
             try:
                 resp = client.chat.completions.create(
@@ -260,6 +268,7 @@ def run_task(
                     messages=messages,
                     temperature=0.2,
                     max_tokens=512,
+                    timeout=LLM_TIMEOUT,
                 )
                 raw = resp.choices[0].message.content or ""
                 try:
@@ -276,21 +285,18 @@ def run_task(
                         logger.warning("Non-JSON LLM output at step %d: %s", step_num + 1, raw[:200])
                         action = {"action_type": "inspect", "inspect_query": "SELECT 1"}
             except Exception as e:
-                # LLM failed — emit noop so the step is still logged cleanly
                 err_msg = _safe_error(str(e)) or "llm_error"
                 action = {"action_type": "noop", "_error": err_msg}
 
-            # ── Determine action type ─────────────────────────────────────────
             action_type = action.get("action_type", "execute")
-
             actions_taken.append(action)
             messages.append({"role": "assistant", "content": json.dumps(action)})
 
-            # Keep context window: system prompt + last 2 exchanges
+            # Keep context window: system + last 2 exchanges
             if len(messages) > 5:
                 messages = [messages[0]] + messages[-4:]
 
-            # ── Submit to environment ─────────────────────────────────────────
+            # Submit to environment
             try:
                 result = api_step(host, action)
             except Exception as e:
@@ -304,18 +310,18 @@ def run_task(
                 time.sleep(RATE_LIMIT_SLEEP)
                 continue
 
-            # ── Extract step results ──────────────────────────────────────────
+            # Extract step results
             obs          = result.get("observation", obs)
             total_reward = result.get("reward", 0.0)
             done         = result.get("done", False)
             info         = result.get("info", {})
 
-            # Per-step delta (not cumulative)
+            # Per-step delta
             step_delta  = round(total_reward - prev_reward, 2)
             step_rewards.append(step_delta)
             prev_reward = total_reward
 
-            # Grader breakdown (stderr only)
+            # Grader breakdown
             grader = info.get("grader", {})
             reward_breakdown = {
                 "total":          total_reward,
@@ -325,8 +331,7 @@ def run_task(
                 "efficiency":     grader.get("efficiency_score", 0.0),
             }
 
-            # [STEP] stdout - spec-compliant
-            # On noop (LLM error), surface LLM error; otherwise surface env error
+            # [STEP] stdout
             env_error   = info.get("error") if action_type != "noop" else None
             llm_error   = action.get("_error") if action_type == "noop" else None
             error_field = _safe_error(llm_error or env_error)
@@ -343,13 +348,12 @@ def run_task(
             time.sleep(RATE_LIMIT_SLEEP)
 
     except Exception:
-        pass  # [END] always emitted in finally
+        pass
 
     finally:
         success         = done and total_reward >= SUCCESS_THRESHOLD
         all_rewards_str = ",".join(f"{r:.2f}" for r in step_rewards) or "0.00"
 
-        # ── [END] stdout — always emitted, even on exception ─────────────────
         print(
             f"[END] success={'true' if success else 'false'} "
             f"steps={min(len(actions_taken), max_steps)} "
@@ -368,13 +372,12 @@ def run_task(
         "actions":    [a.get("sql") or a.get("inspect_query", "") for a in actions_taken],
     }
 
-
 # ---------------------------------------------------------------------------
-# Main entrypoint
+# Main
 # ---------------------------------------------------------------------------
 
 def main() -> list[dict]:
-    parser = argparse.ArgumentParser(description="MigrateEnv Baseline Agent")
+    parser = argparse.ArgumentParser(description="MigrateEnv Baseline Agent (PostgreSQL-aware)")
     parser.add_argument("--host",   default=DEFAULT_HOST, help="MigrateEnv server URL")
     parser.add_argument(
         "--tasks", nargs="+",
@@ -387,13 +390,14 @@ def main() -> list[dict]:
 
     selected_tasks = [t for t in TASKS if t["id"] in args.tasks]
 
-    # Debug: Print host and task info to stderr
     if args.debug:
         print(f"[DEBUG] Host: {args.host}", file=sys.stderr)
+        print(f"[DEBUG] Model: {MODEL_NAME}", file=sys.stderr)
+        print(f"[DEBUG] LLM Timeout: {LLM_TIMEOUT}s", file=sys.stderr)
         print(f"[DEBUG] Tasks: {[t['id'] for t in selected_tasks]}", file=sys.stderr)
         print(f"[DEBUG] Starting health check...", file=sys.stderr)
 
-    # Wait up to 60 s for the MigrateEnv server + DB to be ready
+    # Health check
     MAX_WAIT = 60
     waited   = 0
     last_error = None
@@ -414,16 +418,9 @@ def main() -> list[dict]:
         time.sleep(3)
         waited += 3
     else:
-        # Server not ready — provide helpful error message
         print(
             f"\n❌ ERROR: Could not connect to server at {args.host} after {MAX_WAIT}s\n"
-            f"   Last error: {last_error}\n"
-            f"\n   Troubleshooting:\n"
-            f"   1. Check that the URL is correct: {args.host}\n"
-            f"   2. Ensure the server is running: curl -v {args.host}/health\n"
-            f"   3. For HF Spaces, verify the Space is active and not in sleep mode\n"
-            f"   4. Check network connectivity: curl -v https://www.google.com\n"
-            f"   5. Run with --debug flag for more verbose output\n",
+            f"   Last error: {last_error}\n",
             file=sys.stderr
         )
         sys.exit(1)
@@ -438,7 +435,6 @@ def main() -> list[dict]:
             json.dump(results, f, indent=2)
 
     return results
-
 
 if __name__ == "__main__":
     main()

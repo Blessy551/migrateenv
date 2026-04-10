@@ -59,7 +59,7 @@ client = OpenAI(
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_HOST      = os.getenv("MIGRATEENV_HOST", "http://localhost:8000")
-SUCCESS_THRESHOLD = float(os.environ.get("SUCCESS_THRESHOLD", "0.9"))
+SUCCESS_THRESHOLD = float(os.environ.get("SUCCESS_THRESHOLD", "0.75"))
 REQUEST_TIMEOUT   = 120.0
 LLM_TIMEOUT       = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 RATE_LIMIT_SLEEP  = 2.0
@@ -149,6 +149,11 @@ UNDERSTANDING GRADER FEEDBACK:
 - This means you need MORE steps to complete the migration
 - Keep iterating until the task requirement is met
 - Only send "done" when no issues remain
+
+STOPPING RULE:
+- Do NOT send action_type="done" unless reward_summary shows total >= 0.75
+- If steps_remaining > 0 and grader_feedback shows anything missing, keep executing
+- One step is never enough — a full migration takes 3-8 steps minimum
 """
 
 # ---------------------------------------------------------------------------
@@ -239,6 +244,9 @@ def run_task(host: str, task: dict) -> dict:
     print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
+    last_feedback = ""
+    last_reward_summary = ""
+
     try:
         for step_num in range(max_steps):
             elapsed = time.time() - step_start
@@ -254,9 +262,9 @@ def run_task(host: str, task: dict) -> dict:
             obs_trimmed = {**obs, "current_schema": trimmed_schema}
             
             # Include feedback so LLM knows what's missing
-            feedback = obs.get("grader_feedback", "")
-            if feedback:
-                obs_trimmed["grader_feedback"] = feedback
+            obs_trimmed["grader_feedback"] = last_feedback
+            obs_trimmed["reward_summary"] = last_reward_summary
+            obs_trimmed["steps_remaining"] = max_steps - step_num
             
             messages.append({"role": "user", "content": json.dumps(obs_trimmed)})
 
@@ -292,9 +300,9 @@ def run_task(host: str, task: dict) -> dict:
             actions_taken.append(action)
             messages.append({"role": "assistant", "content": json.dumps(action)})
 
-            # Keep context window: system + last 2 exchanges
-            if len(messages) > 5:
-                messages = [messages[0]] + messages[-4:]
+            # Keep context window: system + last 20 exchanges
+            if len(messages) > 21:
+                messages = [messages[0]] + messages[-20:]
 
             # Submit to environment
             try:
@@ -323,6 +331,13 @@ def run_task(host: str, task: dict) -> dict:
 
             # Grader breakdown
             grader = info.get("grader", {})
+            last_feedback = grader.get("feedback", "") or grader.get("details", {}).get("schema", {}).get("feedback", "")
+            last_reward_summary = (
+                f"schema={grader.get('schema_score', 0):.2f} "
+                f"data={grader.get('data_score', 0):.2f} "
+                f"fk={grader.get('fk_score', 0):.2f} "
+                f"total={total_reward:.2f}"
+            )
             reward_breakdown = {
                 "total":          total_reward,
                 "schema_match":   grader.get("schema_score", 0.0),

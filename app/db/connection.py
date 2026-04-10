@@ -3,37 +3,58 @@ Database connection management for MigrateEnv — Supabase compatible.
 
 Supabase free tier requires:
   - SSL (sslmode=require)
-  - No DROP/CREATE DATABASE
-  - Session-mode pooler (port 5432) OR transaction-mode pooler (port 6543)
-    Use session mode (5432) if your DATABASE_URL uses the pooler hostname.
+  - Session-mode pooler (port 5432) for persistent connections.
+    If using transaction-mode (port 6543), use NullPool only.
+
+Connection strategy:
+  - Port 5432 (session mode)  → QueuePool(pool_size=2) with pre_ping=True
+    This keeps a small pool of warm SSL connections reused across requests,
+    eliminating the per-step SSL handshake overhead that caused timeouts.
+  - Port 6543 (transaction mode) → NullPool (pgbouncer is stateful, no
+    persistent connections allowed).
+  - SQLite (local dev)        → default StaticPool / no pool args needed.
 
 Set DATABASE_URL to your Supabase connection string, e.g.:
-  postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
+  Session mode  (port 5432):  postgresql://postgres.[ref]:[pw]@...pooler.supabase.com:5432/postgres
+  Transaction mode (port 6543): postgresql://postgres.[ref]:[pw]@...pooler.supabase.com:6543/postgres
 """
 import os
 import logging
 from contextlib import contextmanager
 from typing import Generator
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, QueuePool
+
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL environment variable is required (Supabase connection string)"
     )
 
-# Normalise postgres:// → postgresql:// (some Supabase dashboards emit the old scheme)
+# Normalise postgres:// → postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 
 # ---------------------------------------------------------------------------
 # Engine factory
 # ---------------------------------------------------------------------------
+
+def _get_port(url: str) -> int:
+    """Extract the port from a database URL, default to 5432."""
+    try:
+        return urlparse(url).port or 5432
+    except Exception:
+        return 5432
+
 
 def _build_connect_args(url: str) -> dict:
     """Return psycopg2 connect_args with SSL for non-SQLite URLs."""
@@ -55,15 +76,34 @@ def get_engine(url: str = DATABASE_URL):
     if url.startswith("sqlite"):
         return create_engine(url, echo=False)
 
-    return create_engine(
-        url,
-        # NullPool: one connection per request — safest for Supabase pooler
-        # (avoids "prepared statement already exists" errors in pgbouncer
-        #  transaction mode).  Switch to QueuePool only if using session mode.
-        poolclass=NullPool,
-        connect_args=connect_args,
-        echo=False,
-    )
+    port = _get_port(url)
+
+    if port == 6543:
+        # Transaction-mode pooler (pgbouncer) — must use NullPool.
+        # pgbouncer does not support persistent connections / prepared statements.
+        logger.info("Using NullPool (transaction-mode pooler on port 6543)")
+        return create_engine(
+            url,
+            poolclass=NullPool,
+            connect_args=connect_args,
+            echo=False,
+        )
+    else:
+        # Session-mode pooler (port 5432) — use a small QueuePool with
+        # pre_ping so stale connections are recycled instead of causing errors.
+        # pool_size=2 is enough for a single-worker FastAPI server.
+        logger.info("Using QueuePool(pool_size=2) with pre_ping (session-mode pooler on port %d)", port)
+        return create_engine(
+            url,
+            poolclass=QueuePool,
+            pool_size=2,
+            max_overflow=2,
+            pool_timeout=30,
+            pool_recycle=300,    # recycle connections every 5 min
+            pool_pre_ping=True,  # test connection health before use
+            connect_args=connect_args,
+            echo=False,
+        )
 
 
 engine = get_engine()
@@ -72,18 +112,31 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_admin_engine():
     """
+    Returns an engine with AUTOCOMMIT isolation for admin operations.
     On Supabase free tier there is no separate admin DB to connect to.
-    Returns the same engine with AUTOCOMMIT (harmless for our use-case
-    because initialize_db no longer needs DROP/CREATE DATABASE).
     """
     connect_args = _build_connect_args(DATABASE_URL)
-    return create_engine(
-        DATABASE_URL,
-        poolclass=NullPool,
-        connect_args=connect_args,
-        isolation_level="AUTOCOMMIT",
-        echo=False,
-    )
+    port = _get_port(DATABASE_URL)
+
+    if port == 6543:
+        return create_engine(
+            DATABASE_URL,
+            poolclass=NullPool,
+            connect_args=connect_args,
+            isolation_level="AUTOCOMMIT",
+            echo=False,
+        )
+    else:
+        return create_engine(
+            DATABASE_URL,
+            poolclass=QueuePool,
+            pool_size=1,
+            max_overflow=1,
+            pool_pre_ping=True,
+            connect_args=connect_args,
+            isolation_level="AUTOCOMMIT",
+            echo=False,
+        )
 
 
 # ---------------------------------------------------------------------------

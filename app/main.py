@@ -194,23 +194,6 @@ def grader():
 
     return last
 
-
-@app.get("/baseline", tags=["evaluation"])
-def baseline_info():
-    """
-    Returns baseline agent information.
-    Run the standalone baseline.py script to execute the full baseline evaluation.
-    """
-    return {
-        "message": "Run 'python baseline.py' to evaluate all tasks with the Groq LLM baseline agent.",
-        "tasks": ["easy", "medium", "hard"],
-        "model": "llama3-70b-8192",
-        "api": "groq",
-        "required_env_var": "GROQ_API_KEY",
-        "note": "The baseline agent loops through all tasks, submitting SQL actions guided by the LLM.",
-    }
-
-
 # ---------------------------------------------------------------------------
 # Startup event
 # ---------------------------------------------------------------------------

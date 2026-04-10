@@ -275,23 +275,34 @@ class MigrateEnv:
     # -----------------------------------------------------------------------
 
     def _execute_sql(self, sql: str) -> dict[str, Any]:
-        """Execute SQL against the live DB, return execution info dict."""
+        """Execute SQL against the live DB, return execution info dict.
+
+        Only reconnects on genuine connection-level errors (OperationalError),
+        not on every SQL syntax/semantic error, to avoid rebuilding the SSL
+        connection pool on every invalid agent action.
+        """
+        from sqlalchemy.exc import OperationalError
         try:
             with self._engine.begin() as conn:
                 conn.execute(text(sql))
             return {"success": True, "sql_executed": sql}
-        except Exception as e:
-            logger.warning(f"SQL execution error: {e} | SQL: {sql[:200]}")
+        except OperationalError as e:
+            # True connection drop — reconnect and retry once
+            logger.warning(f"DB connection error, attempting reconnect: {e}")
             try:
                 reconnect(DATABASE_URL)
                 self._engine = get_engine()
-                logger.info("DB reconnected after error — retrying SQL")
+                logger.info("DB reconnected — retrying SQL")
                 with self._engine.begin() as conn:
                     conn.execute(text(sql))
                 return {"success": True, "sql_executed": sql, "reconnected": True}
             except Exception as e2:
                 logger.error(f"SQL still failing after reconnect: {e2}")
                 return {"success": False, "error": str(e2), "sql_executed": sql}
+        except Exception as e:
+            # SQL syntax/semantic error — report it cleanly, no reconnect needed
+            logger.warning(f"SQL execution error: {e} | SQL: {sql[:200]}")
+            return {"success": False, "error": str(e), "sql_executed": sql}
 
     def _build_observation(self) -> Observation:
         """Build the current observation from DB state."""

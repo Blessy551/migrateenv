@@ -94,7 +94,7 @@ TASKS = [
 # ---------------------------------------------------------------------------
 # LLM system prompt
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a SQLite database migration engineer operating inside MigrateEnv.
+SYSTEM_PROMPT = """You are a PostgreSQL database migration engineer operating inside MigrateEnv.
 
 You will receive an observation containing:
   - task_description: what needs to be migrated
@@ -108,55 +108,33 @@ Always respond with a single JSON action using this exact format:
 {"action_type": "inspect" | "execute" | "done", "sql": "...", "inspect_query": "..."}
 
 CRITICAL RULES:
-- You are working with SQLite, NOT PostgreSQL.
-- SQLite does NOT support:
-  - information_schema
-  - SERIAL (use INTEGER PRIMARY KEY instead — it auto-increments)
-  - NOW() (use CURRENT_TIMESTAMP instead)
-  - SMALLINT (use INTEGER instead)
-  - ALTER TABLE ... ADD CONSTRAINT (this will always fail)
-  - ALTER TABLE ... ADD CHECK (this will always fail)
-  - CONSTRAINT <name> FOREIGN KEY inside ALTER TABLE (declare FKs inside CREATE TABLE only)
-- ALTER TABLE ... DROP COLUMN exists only in SQLite 3.35+; prefer the table rebuild pattern.
-- Table names are case-sensitive (e.g., Customers, Orders, Products).
-
-ADDING A CHECK CONSTRAINT IN SQLITE (only supported method — table rebuild):
-SQLite cannot add constraints to existing tables. You must rebuild the table:
-  Step 1: PRAGMA table_info('TableName') — get every column exactly
-  Step 2: CREATE TABLE t_new (...all original columns..., new_col ..., CHECK (...))
-  Step 3: INSERT INTO t_new SELECT <all original cols>, <new_col_value> FROM t
-  Step 4: DROP TABLE t
-  Step 5: ALTER TABLE t_new RENAME TO t
-
-REMOVING COLUMNS IN SQLITE (table rebuild pattern):
-  Step 1: PRAGMA table_info('TableName') — get every column exactly
-  Step 2: CREATE TABLE t_new with only the columns you want to keep
-  Step 3: INSERT INTO t_new SELECT <kept cols> FROM t
-  Step 4: DROP TABLE t
-  Step 5: ALTER TABLE t_new RENAME TO t
+- You are working with PostgreSQL (Supabase).
+- You MAY use native PostgreSQL features like `ALTER TABLE ... ADD CONSTRAINT`, `ALTER TABLE ... DROP COLUMN`, `SERIAL`, `TIMESTAMP`, etc.
+- No table rebuilds are necessary for adding constraints or dropping columns.
+- Table names and column names are case-sensitive. Use correct casing.
+- Do NOT use TRUNCATE, DROP DATABASE, or DROP SCHEMA.
 
 MANDATORY FIRST STEP:
-- You MUST ALWAYS start by inspecting the database.
+- You MUST ALWAYS start by inspecting the database schema.
 - First run:
-  SELECT name FROM sqlite_master WHERE type='table';
+  SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
 
 - Then inspect columns using:
-  PRAGMA table_info('TableName');
+  SELECT column_name, data_type, character_maximum_length, is_nullable
+  FROM information_schema.columns 
+  WHERE table_schema = 'public' AND table_name = 'your_table_name';
 
 Rules:
 - "inspect": run a read-only SQL query (SELECT) to understand current state — set inspect_query
 - "execute": run a migration SQL statement (ALTER TABLE, CREATE TABLE, UPDATE, CREATE INDEX, INSERT) — set sql
 - "done": signal that the migration is complete
 - One action per response. No explanation. Pure JSON only.
-- Do NOT use TRUNCATE, DROP DATABASE, or DROP SCHEMA.
-- Do NOT assume table names — always inspect first.
 - If an execute fails, correct it in the next step.
 - After completing all steps, verify your work with a SELECT before sending done.
-- For normalization tasks, ensure ALL listed columns are dropped from the source table.
 
 STRATEGY:
-1. Inspect tables first
-2. Inspect schema of relevant tables
+1. Inspect tables first (information_schema.tables)
+2. Inspect schema of relevant tables (information_schema.columns)
 3. Perform migration steps
 4. Verify results before finishing
 """
@@ -404,24 +382,50 @@ def main() -> list[dict]:
         help="Task IDs to run (easy, medium, hard)",
     )
     parser.add_argument("--output", default=None, help="Save results as JSON file")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
     args = parser.parse_args()
 
     selected_tasks = [t for t in TASKS if t["id"] in args.tasks]
 
+    # Debug: Print host and task info to stderr
+    if args.debug:
+        print(f"[DEBUG] Host: {args.host}", file=sys.stderr)
+        print(f"[DEBUG] Tasks: {[t['id'] for t in selected_tasks]}", file=sys.stderr)
+        print(f"[DEBUG] Starting health check...", file=sys.stderr)
+
     # Wait up to 60 s for the MigrateEnv server + DB to be ready
     MAX_WAIT = 60
     waited   = 0
+    last_error = None
+    
     while waited < MAX_WAIT:
         try:
+            if args.debug:
+                print(f"[DEBUG] Health check attempt {waited//3 + 1}/20...", file=sys.stderr, end=" ")
             health = api_health(args.host)
             if health:
+                if args.debug:
+                    print(f"✓ Server is ready!", file=sys.stderr)
                 break
-        except Exception:
-            pass
+        except Exception as e:
+            last_error = str(e)
+            if args.debug:
+                print(f"✗ {type(e).__name__}", file=sys.stderr)
         time.sleep(3)
         waited += 3
     else:
-        # Server not ready — exit cleanly (no stdout noise)
+        # Server not ready — provide helpful error message
+        print(
+            f"\n❌ ERROR: Could not connect to server at {args.host} after {MAX_WAIT}s\n"
+            f"   Last error: {last_error}\n"
+            f"\n   Troubleshooting:\n"
+            f"   1. Check that the URL is correct: {args.host}\n"
+            f"   2. Ensure the server is running: curl -v {args.host}/health\n"
+            f"   3. For HF Spaces, verify the Space is active and not in sleep mode\n"
+            f"   4. Check network connectivity: curl -v https://www.google.com\n"
+            f"   5. Run with --debug flag for more verbose output\n",
+            file=sys.stderr
+        )
         sys.exit(1)
 
     results: list[dict] = []

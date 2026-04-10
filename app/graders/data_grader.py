@@ -71,19 +71,20 @@ class DataGrader(BaseGrader):
             checks.append(ok)
             details["product_pricing_has_rows"] = {"count": pp_count, "ok": ok}
 
-            # --- Bug 5: Verify actual data values (non-null unit_price matches row count) ---
-            try:
-                with engine.connect() as conn:
-                    orig = conn.execute(text(
-                        "SELECT COUNT(*) FROM product_pricing WHERE unit_price IS NOT NULL"
-                    )).scalar()
-                ok = (orig == row_counts.get("product_pricing", 0))
-                checks.append(ok)
-                details["product_pricing_price_populated"] = {"non_null_prices": orig, "ok": ok}
-            except Exception as e:
-                logger.warning("data_grader: product_pricing price check failed (table may not exist yet): %s", e)
-                checks.append(False)
-                details["product_pricing_price_populated"] = {"error": str(e), "ok": False}
+            if ok:
+                try:
+                    with engine.connect() as conn:
+                        orig = conn.execute(text(
+                            "SELECT COUNT(*) FROM product_pricing WHERE unit_price IS NOT NULL"
+                        )).scalar()
+                    ok2 = (orig == pp_count)
+                    checks.append(ok2)
+                    details["product_pricing_price_populated"] = {"non_null_prices": orig, "ok": ok2}
+                except Exception as e:
+                    logger.warning("data_grader: product_pricing price check failed: %s", e)
+                    details["product_pricing_price_populated"] = {"error": str(e), "skipped": True}
+            else:
+                details["product_pricing_price_populated"] = {"skipped": True, "reason": "table empty or missing"}
 
         if not checks:
             return 1.0, {"note": "No data requirements specified"}

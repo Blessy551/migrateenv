@@ -5,7 +5,8 @@ Weights:
   schema_match:        0.35
   data_integrity:      0.30
   relational_integrity: 0.20
-  step_efficiency:     0.10
+  migration_bonus:     0.05
+  step_efficiency:     0.05
   time_score:          0.05
 
 Penalties (subtracted after weighting):

@@ -82,27 +82,28 @@ class SchemaGrader(BaseGrader):
             if missing:
                 logger.debug("schema_grader: %s missing columns on '%s': %s", len(missing), main_table, missing)
 
-        # 2b. product_pricing-specific required columns
-        pp_reqs      = requirements.get("product_pricing", {})
-        pp_col_reqs: list[dict] = pp_reqs.get("required_columns", [])
-        if pp_col_reqs:
-            pp_table = "product_pricing"
-            expected = {c["name"] for c in pp_col_reqs}
-            actual   = get_table_columns(engine, pp_table)  # empty set if absent
+        # 2b. Sub-table required columns (any table-specific block in requirements)
+        for key, val in requirements.items():
+            if not isinstance(val, dict):
+                continue
+            sub_col_reqs = val.get("required_columns", [])
+            if not sub_col_reqs:
+                continue
+            sub_table = key
+            expected = {c["name"] for c in sub_col_reqs}
+            actual   = get_table_columns(engine, sub_table)
             matched  = expected & actual
             missing  = expected - actual
             extra    = actual   - expected
             col_score = len(matched) / len(expected) if expected else 1.0
-            column_diff[pp_table] = {
+            column_diff[sub_table] = {
                 "matched": sorted(matched),
                 "missing": sorted(missing),
                 "extra":   sorted(extra),
                 "score":   round(col_score, 4),
             }
-            if not table_checks.get(pp_table, True):
-                logger.warning(
-                    "Table '%s' does not exist yet — continuing evaluation", pp_table
-                )
+            if not table_checks.get(sub_table, True):
+                logger.warning("Table '%s' does not exist yet — continuing evaluation", sub_table)
 
         # 2c. products removed-columns check (treated as a column correctness dimension)
         products_reqs  = requirements.get("products", {})

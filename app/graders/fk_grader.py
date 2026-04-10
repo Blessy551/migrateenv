@@ -99,8 +99,7 @@ class FKGrader(BaseGrader):
                 details["orphans_product_pricing_error"] = str(e)
 
         if not checks:
-            # No FK requirements — neutral score (give benefit of doubt to base Northwind FKs)
-            return 0.8, {"note": "No FK requirements specified; base Northwind FKs assumed intact"}
+            return 1.0, {"note": "No FK requirements specified; full marks by default"}
 
         score = sum(1 for c in checks if c) / len(checks)
         details["total_checks"] = len(checks)

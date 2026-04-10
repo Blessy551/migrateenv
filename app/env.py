@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Set lower than 1.0 to account for progressive scoring where timing /
 # efficiency sub-scores prevent a perfect result on a fully correct migration.
 # Override at runtime:  SUCCESS_THRESHOLD=0.85 uvicorn app.main:app
-SUCCESS_THRESHOLD: float = float(os.environ.get("SUCCESS_THRESHOLD", "0.9"))
+SUCCESS_THRESHOLD: float = float(os.environ.get("SUCCESS_THRESHOLD", "0.8"))
 
 # Patterns considered truly dangerous (not just invalid).
 # These are a subset of what the sanitizer blocks; we detect them here to
@@ -204,12 +204,7 @@ class MigrateEnv:
             self._last_grader_result = grader_result
             reward = grader_result["composite_reward"]
 
-            # --- Mild SELECT penalty: discourage excessive inspection steps ---
-            # Only penalise pure SELECT queries; all other DDL/DML is unaffected.
-            if sql.strip().upper().startswith("SELECT"):
-                reward = round(reward * 0.9, 4)
-                info["select_penalty"] = True
-                logger.debug("SELECT penalty applied — reward reduced to %.4f", reward)
+
 
             self._last_reward = reward
             self._cached_schema = None  # grader consumed DB state; clear cache

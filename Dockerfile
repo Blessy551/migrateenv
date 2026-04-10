@@ -31,7 +31,6 @@ COPY --from=builder /install /usr/local
 # Copy application source
 COPY app/ ./app/
 COPY db/ ./db/
-COPY baseline.py .
 COPY openenv.yaml .
 COPY inference.py .
 

@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.env import MigrateEnv
 from app.models import (
-    ResetRequest, StepRequest,
+    ResetRequest, StepRequest, ResetResponse,
     Observation, StepResult, EnvState,
     GraderResult, TaskMeta, HealthResponse, BaselineResult,
 )
@@ -50,7 +50,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Single global environment instance (per process)
+import uuid
+# Global dictionary for session tracking
+SESSIONS = {}
+
+# Keep a global dummy env for backwards-compatible /health queries
 env = MigrateEnv()
 _startup_time = time.time()
 
@@ -90,16 +94,24 @@ def list_tasks():
     return tasks
 
 
-@app.post("/reset", response_model=Observation, tags=["env"])
+@app.post("/reset", response_model=ResetResponse, tags=["env"])
 def reset(request: ResetRequest):
     """
     Initialize the environment for a given task.
     Reloads the real Northwind database from SQL dump (deterministic clean state).
     """
     try:
-        obs = env.reset(request.task_id)
-        logger.info(f"Reset successful for task '{request.task_id}'")
-        return obs
+        env_instance = MigrateEnv()
+        obs = env_instance.reset(request.task_id)
+        
+        session_id = str(uuid.uuid4())
+        SESSIONS[session_id] = {
+            "env": env_instance,
+            "state": obs,
+        }
+        
+        logger.info(f"Reset successful for task '{request.task_id}', session: {session_id}")
+        return ResetResponse(session_id=session_id, observation=obs)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -111,15 +123,28 @@ def reset(request: ResetRequest):
 def step(request: StepRequest):
     """
     Execute a SQL action in the environment.
-    Returns observation, reward, done flag, and grading info.
-    This endpoint NEVER returns HTTP 5xx — all errors are surfaced in the
-    response body as info["error"] with reward=0 and done=False.
     """
+    session_id = request.session_id
+    import sys
+    print(f"[DEBUG][BACKEND] Received step with session_id={session_id}", file=sys.stderr)
+    
+    if session_id not in SESSIONS:
+        print(f"[ERROR][BACKEND] session_id {session_id} not found!", file=sys.stderr)
+        # Return error using standard StepResult structure to avoid breaking agent parsing
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid session_id"}
+        )
+
+    print(f"[DEBUG][BACKEND] session_id {session_id} found, continuing episode", file=sys.stderr)
+    env_instance = SESSIONS[session_id]["env"]
+    print(f"[DEBUG][BACKEND] Step BEFORE: env_id={id(env_instance)}", file=sys.stderr)
+    
     try:
-        result = env.step(request.sql)
+        result = env_instance.step(request.sql)
+        print(f"[DEBUG][BACKEND] Step AFTER: env_id={id(env_instance)} done={result.done} reward={result.reward}", file=sys.stderr)
         return result
     except RuntimeError as e:
-        # Not-initialized / already-done — return 400 with explanation
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         import traceback

@@ -64,6 +64,7 @@ REQUEST_TIMEOUT   = 120.0
 LLM_TIMEOUT       = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 RATE_LIMIT_SLEEP  = 2.0
 BENCHMARK         = "migrateenv"
+DEBUG             = "--debug" in sys.argv
 
 # Task definitions
 TASKS = [
@@ -165,7 +166,7 @@ def api_reset(host: str, task_id: str) -> dict:
     r.raise_for_status()
     return r.json()
 
-def api_step(host: str, action: dict) -> dict:
+def api_step(host: str, action: dict, session_id: str) -> dict:
     """Submit an action; maps action_type to the correct SQL field."""
     action_type = action.get("action_type", "execute")
     if action_type == "execute":
@@ -174,7 +175,11 @@ def api_step(host: str, action: dict) -> dict:
         sql = action.get("inspect_query", "SELECT 1")
     else:  # done / noop
         sql = "SELECT 1"
-    r = httpx.post(f"{host}/step", json={"sql": sql}, timeout=REQUEST_TIMEOUT)
+        
+    if DEBUG:
+        print(f"[DEBUG] sending step request: sql={sql[:100]} session_id={session_id}", file=sys.stderr)
+        
+    r = httpx.post(f"{host}/step", json={"sql": sql, "session_id": session_id}, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
@@ -228,7 +233,13 @@ def run_task(host: str, task: dict) -> dict:
 
     # Reset environment
     try:
-        obs = api_reset(host, task_id)
+        reset_resp = api_reset(host, task_id)
+        session_id = reset_resp.get("session_id")
+        obs = reset_resp.get("observation", reset_resp)
+        
+        if DEBUG:
+            print(f"[DEBUG] session_id initialized: {session_id}", file=sys.stderr)
+            
         time.sleep(3)
     except Exception as e:
         print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
@@ -305,8 +316,11 @@ def run_task(host: str, task: dict) -> dict:
                 messages = [messages[0]] + messages[-20:]
 
             # Submit to environment
+            if DEBUG:
+                print(f"[DEBUG] step={step_num+1} using session_id={session_id}", file=sys.stderr)
+                
             try:
-                result = api_step(host, action)
+                result = api_step(host, action, session_id)
             except Exception as e:
                 err_str = _safe_error(str(e))
                 print(

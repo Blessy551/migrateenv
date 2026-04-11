@@ -16,6 +16,11 @@ class ResetRequest(BaseModel):
 
 class StepRequest(BaseModel):
     sql: str = Field(..., description="Single SQL statement to execute as the agent's action")
+    session_id: str = Field(..., description="Session ID for environment state continuity")
+
+class ResetResponse(BaseModel):
+    session_id: str
+    observation: Observation
 
 
 # ---------------------------------------------------------------------------

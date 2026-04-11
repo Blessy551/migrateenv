@@ -48,6 +48,7 @@ class Observation(BaseModel):
     task_description: str
     difficulty: str
     hint: str
+    target_spec: dict[str, Any] = Field(default_factory=dict, description="Technical specification of the target schema")
     current_schema: dict[str, Any]
     row_counts: dict[str, int]
     step_number: int

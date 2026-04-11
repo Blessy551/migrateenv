@@ -1,105 +1,113 @@
 """
-MEDIUM TASK — Normalize the Northwind 'products' table by splitting
-pricing and stock data into a new 'product_pricing' table.
+Task 2 (Medium): Split Orders Table into Orders + Shipments
 
-Goal:
-  1. CREATE TABLE product_pricing with:
-       product_id (FK → products.product_id),
-       unit_price REAL, units_in_stock INTEGER,
-       units_on_order INTEGER, reorder_level INTEGER,
-       discontinued INTEGER
-  2. INSERT INTO product_pricing SELECT pricing cols FROM products
-  3. Rebuild products table WITHOUT the 5 pricing columns
-     (SQLite does not support DROP COLUMN reliably — use table rebuild)
-  4. FOREIGN KEY from product_pricing.product_id → products.product_id
-     declared inline in CREATE TABLE (SQLite style)
-
-Success criteria:
-  - product_pricing table exists with all 77 rows
-  - FK from product_pricing → products is declared
-  - products table NO LONGER has the 5 pricing columns
-  - products row count still 77
+PRD Specification:
+- Split monolithic `orders` table into `orders` and `shipments`.
+- orders: (id, user_id, total, status, created_at)
+- shipments: (id, order_id, address, city, postal_code, shipped_at) + FK to orders.id
+- Starting: 200 rows in orders.
+- Grading (0.25 each):
+  * orders schema correct
+  * shipments schema + FK correct
+  * 200 rows preserved in orders
+  * 200 rows moved to shipments with correct FK
+- Max steps: 20 | Time limit: 120s | Expected score: ~0.60
 """
+from __future__ import annotations
 from app.tasks.base import BaseTask
-
 
 class MediumTask(BaseTask):
     task_id = "medium"
     difficulty = "medium"
-    description = (
-        "Normalize the Northwind 'products' table by extracting pricing/stock columns "
-        "(unit_price, units_in_stock, units_on_order, reorder_level, discontinued) "
-        "into a new 'product_pricing' table with a foreign key back to products. "
-        "All 77 product rows must be preserved in both tables."
-    )
-    target_description = (
-        "product_pricing table exists (77 rows), FK product_pricing.product_id → products.product_id. "
-        "products table no longer contains the 5 pricing columns."
-    )
+    description = "Split the monolithic orders table into orders + shipments with a foreign key relationship"
     max_steps = 20
-    target_reward = 0.95
+    time_limit = 120
+    target_reward = 0.60
+    
+    def get_target_description(self) -> str:
+        return """Target Schema for Task 2:
+        
+orders table MUST have:
+- id, user_id, total, status, created_at
 
-    def get_initial_observation_data(self):
-        return {
-            "focus_tables": ["products"],
-            "northwind_note": (
-                "products has 77 rows. Columns to move: "
-                "unit_price, units_in_stock, units_on_order, reorder_level, discontinued."
-            ),
-            "task_goal": self.description,
-        }
+shipments table MUST have:
+- id, order_id (FK to orders.id), address, city, postal_code, shipped_at
+
+Data Requirements:
+- All 200 rows from the original orders table must be preserved.
+- Shipping information must be correctly moved to the new shipments table."""
 
     def get_hint(self) -> str:
-        return (
-            "You are on PostgreSQL (Supabase). PostgreSQL supports ALTER TABLE ... DROP COLUMN natively — "
-            "no table rebuild needed. "
-            "Step 1: CREATE the new table with FK: "
-            "CREATE TABLE product_pricing ("
-            "product_id INTEGER PRIMARY KEY, "
-            "unit_price REAL, units_in_stock INTEGER, units_on_order INTEGER, "
-            "reorder_level INTEGER, discontinued INTEGER, "
-            "CONSTRAINT fk_product_pricing_product FOREIGN KEY (product_id) REFERENCES products(product_id)); "
-            "Step 2: Populate it: "
-            "INSERT INTO product_pricing SELECT product_id, unit_price, units_in_stock, "
-            "units_on_order, reorder_level, discontinued FROM products; "
-            "Step 3: Drop each pricing column from products one at a time: "
-            "ALTER TABLE products DROP COLUMN unit_price; "
-            "ALTER TABLE products DROP COLUMN units_in_stock; "
-            "ALTER TABLE products DROP COLUMN units_on_order; "
-            "ALTER TABLE products DROP COLUMN reorder_level; "
-            "ALTER TABLE products DROP COLUMN discontinued; "
-            "Step 4: Verify: SELECT COUNT(*) FROM products; (expect 77) and SELECT COUNT(*) FROM product_pricing; (expect 77)"
-        )
+        return """Step-by-step migration plan:
 
-    def get_target_schema_requirements(self):
+Step 1: Inspect current orders table
+SELECT table_name, column_name FROM information_schema.columns WHERE table_name='orders';
+
+Step 2: Create the shipments table
+CREATE TABLE shipments (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    address TEXT,
+    city TEXT,
+    postal_code TEXT,
+    shipped_at TIMESTAMP
+);
+
+Step 3: Move data to shipments
+INSERT INTO shipments (order_id, address, city, postal_code, shipped_at)
+SELECT id, address, city, postal_code, shipped_at FROM orders;
+
+Step 4: Drop old columns from orders
+ALTER TABLE orders DROP COLUMN address, DROP COLUMN city, DROP COLUMN postal_code, DROP COLUMN shipped_at;"""
+
+    def get_target_schema_requirements(self) -> dict:
         return {
-            "required_tables": ["products", "product_pricing"],
-            "product_pricing": {
-                "required_columns": [
-                    {"name": "product_id"},
-                    {"name": "unit_price"},
-                    {"name": "units_in_stock"},
-                    {"name": "units_on_order"},
-                    {"name": "reorder_level"},
-                    {"name": "discontinued"},
-                ],
-                "required_foreign_keys": [
+            "required_tables": ["orders", "shipments"],
+            "orders": {
+                "required_columns": ["id", "user_id", "total", "status", "created_at"],
+                "removed_columns": ["address", "city", "postal_code", "shipped_at"],
+            },
+            "shipments": {
+                "required_columns": ["id", "order_id", "address", "city", "postal_code", "shipped_at"],
+                "foreign_keys": [
                     {
-                        "from_table": "product_pricing",
-                        "constrained_columns": ["product_id"],
-                        "referred_table": "products",
-                        "referred_columns": ["product_id"],
+                        "column": "order_id",
+                        "ref_table": "orders",
+                        "ref_column": "id"
                     }
-                ],
+                ]
             },
-            "products": {
-                "removed_columns": [
-                    "unit_price", "units_in_stock",
-                    "units_on_order", "reorder_level", "discontinued"
-                ],
-            },
-            "required_row_counts": {
-                "products": 77,
-                "product_pricing": 77,
-            },
+            "data_checks": [
+                {"table": "orders", "expected_count": 200},
+                {"table": "shipments", "expected_count": 200}
+            ],
         }
+
+    def reset_task(self, engine):
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS shipments CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS orders CASCADE"))
+            
+            # Create monolithic orders table
+            conn.execute(text("""
+                CREATE TABLE orders (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    total DECIMAL(10,2) NOT NULL,
+                    status VARCHAR(50) NOT NULL,
+                    created_at TIMESTAMP NOT NULL,
+                    address TEXT,
+                    city TEXT,
+                    postal_code TEXT,
+                    shipped_at TIMESTAMP
+                )
+            """))
+            
+            # Seed 200 orders
+            conn.execute(text("""
+                INSERT INTO orders (user_id, total, status, created_at, address, city, postal_code, shipped_at)
+            """) + ",\n".join([
+                f"(1, {10.50 + i}, 'completed', NOW(), 'Address {i}', 'City {i}', 'Zip {i}', NOW())"
+                for i in range(200)
+            ]))

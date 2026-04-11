@@ -1,114 +1,109 @@
 """
-HARD TASK — Multi-table migration on Northwind 'orders' table.
+Task 3 (Hard): v1 to v3 Multi-Table Migration
 
-Goal:
-  1. ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending'
-  2. UPDATE order_status based on shipped_date:
-       shipped_date IS NULL → 'pending'
-       shipped_date IS NOT NULL → 'shipped'
-  3. ADD CHECK CONSTRAINT chk_order_status (order_status IN ('pending','shipped','cancelled'))
-     NOTE: SQLite requires a table rebuild to add CHECK constraints.
-     Use CREATE TABLE orders_new (..., CHECK (...)), copy data, DROP old, RENAME new.
-  4. CREATE COMPOSITE INDEX idx_orders_customer_date ON orders(customer_id, order_date)
-  5. CREATE TABLE audit_log (
-         log_id INTEGER PRIMARY KEY,   -- SQLite auto-increment; do NOT use SERIAL
-         table_name VARCHAR(50),
-         operation VARCHAR(20),
-         performed_at DATETIME DEFAULT CURRENT_TIMESTAMP,  -- do NOT use NOW()
-         note TEXT
-     )
-  6. INSERT a record into audit_log documenting this migration
-
-Success criteria:
-  - orders.order_status column exists (830 rows preserved)
-  - CHECK constraint chk_order_status present
-  - Composite index idx_orders_customer_date exists
-  - audit_log table exists with ≥ 1 row
-  - No FK violations
+PRD Specification:
+- Complex migration involving 5 tables: users, products, orders, order_items, reviews.
+- Changes:
+  1. Rename users.fullname -> users.first_name + users.last_name (split values).
+  2. Type change: products.price (TEXT) -> NUMERIC(10,2).
+  3. New table: discounts (id, order_id FK, amount, code).
+  4. Index: partial index on orders(status) WHERE status != 'completed'.
+- Starting: Baseline data in all 5 tables.
+- Grading (0.35 + 0.25 + 0.15 + 0.10 + 0.10):
+  * Schema diff score: 0.35
+  * Data integrity (row counts): 0.25
+  * users name split correctly: 0.15
+  * products price coercion valid: 0.10
+  * partial index present: 0.10
+- Max steps: 30 | Time limit: 300s | Expected score: ~0.30
 """
+from __future__ import annotations
 from app.tasks.base import BaseTask
-
 
 class HardTask(BaseTask):
     task_id = "hard"
     difficulty = "hard"
-    description = (
-        "Multi-table migration on the Northwind 'orders' table: "
-        "(1) Add order_status VARCHAR(20) column computed from shipped_date, "
-        "(2) Add CHECK constraint on order_status values, "
-        "(3) Create composite index on (customer_id, order_date), "
-        "(4) Create audit_log table and record the migration. "
-        "All 830 original order rows must be preserved."
-    )
-    target_description = (
-        "orders has order_status column (correct values), CHECK constraint, composite index. "
-        "audit_log table exists with ≥ 1 row. 830 order rows preserved."
-    )
+    description = "v1 to v3 migration: split users names, coerce product prices, add discounts table, and create partial indexes"
     max_steps = 30
-    target_reward = 0.95
+    time_limit = 300
+    target_reward = 0.30
+    
+    def get_target_description(self) -> str:
+        return """Target Schema for Task 3:
+        
+users table:
+- first_name, last_name (fullname must be split into these two)
 
-    def get_initial_observation_data(self):
-        return {
-            "focus_tables": ["orders"],
-            "northwind_note": (
-                "orders has 830 rows. shipped_date is NULL for pending orders. "
-                "employee_id FK → employees, customer_id FK → customers, ship_via FK → shippers."
-            ),
-            "task_goal": self.description,
-        }
+products table:
+- price column must be NUMERIC(10,2) and contain valid numeric data
+
+discounts table (NEW):
+- id (SERIAL PK), order_id (FK to orders.id), amount (DECIMAL), code (VARCHAR)
+
+orders table:
+- Existing columns preserved
+- NEW: Partial index idx_orders_uncompleted on status WHERE status != 'completed'
+
+Data Requirements:
+- Row counts must be preserved for all tables.
+- Full name 'First Last' must be split correctly into first_name='First', last_name='Last'."""
 
     def get_hint(self) -> str:
-        return (
-            "You are on PostgreSQL (Supabase). Use native Postgres syntax throughout — no table rebuilds needed. "
-            "Step 1: Add the column: "
-            "ALTER TABLE orders ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending'; "
-            "Step 2: Backfill based on shipped_date: "
-            "UPDATE orders SET order_status = CASE WHEN shipped_date IS NULL THEN 'pending' ELSE 'shipped' END; "
-            "Step 3: Add CHECK constraint (Postgres supports this directly): "
-            "ALTER TABLE orders ADD CONSTRAINT chk_order_status "
-            "CHECK (order_status IN ('pending', 'shipped', 'cancelled')); "
-            "Step 4: Create the composite index: "
-            "CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date); "
-            "Step 5: Create audit_log table (use SERIAL for auto-increment, NOW() for timestamp): "
-            "CREATE TABLE audit_log ("
-            "log_id SERIAL PRIMARY KEY, "
-            "table_name VARCHAR(50), operation VARCHAR(20), "
-            "performed_at TIMESTAMP DEFAULT NOW(), note TEXT); "
-            "Step 6: Insert audit record: "
-            "INSERT INTO audit_log (table_name, operation, note) VALUES "
-            "('orders', 'MIGRATION', 'Added order_status column, CHECK constraint, composite index, audit_log'); "
-            "Step 7: Verify SELECT COUNT(*) FROM orders; (expect 830)"
-        )
+        return """Step-by-step migration plan:
 
-    def get_target_schema_requirements(self):
+Step 1: Split user names
+ALTER TABLE users ADD COLUMN first_name TEXT, ADD COLUMN last_name TEXT;
+UPDATE users SET first_name = split_part(fullname, ' ', 1), last_name = split_part(fullname, ' ', 2);
+ALTER TABLE users DROP COLUMN fullname;
+
+Step 2: Coerce product prices
+ALTER TABLE products ALTER COLUMN price TYPE NUMERIC(10,2) USING price::numeric;
+
+Step 3: Create discounts table
+CREATE TABLE discounts (id SERIAL PRIMARY KEY, order_id INTEGER REFERENCES orders(id), amount NUMERIC(10,2), code TEXT);
+
+Step 4: Create partial index
+CREATE INDEX idx_orders_uncompleted ON orders(status) WHERE status != 'completed';"""
+
+    def get_target_schema_requirements(self) -> dict:
         return {
-            "table": "orders",
-            "required_columns": [
-                {
-                    "name": "order_status",
-                    "type_contains": "VARCHAR",
-                    "nullable": False,
-                }
-            ],
-            "required_check_constraints": [
-                {
-                    "name": "chk_order_status",
-                    "sqltext_contains": "order_status",
-                }
-            ],
-            "required_indexes": [
-                {
-                    "name": "idx_orders_customer_date",
-                    "table": "orders",
-                }
-            ],
-            "required_tables": ["orders", "audit_log"],
-            "required_row_counts": {
-                "orders": 830,
+            "required_tables": ["users", "products", "orders", "order_items", "reviews", "discounts"],
+            "users": {"required_columns": ["id", "first_name", "last_name"], "removed_columns": ["fullname"]},
+            "products": {"required_columns": ["id", "name", "price"]},
+            "discounts": {
+                "required_columns": ["id", "order_id", "amount", "code"],
+                "foreign_keys": [{"column": "order_id", "ref_table": "orders", "ref_column": "id"}]
             },
-            "audit_log_min_rows": 1,
-            "required_status_values": {
-                "query": "SELECT DISTINCT LOWER(order_status) FROM orders ORDER BY 1",
-                "must_contain": ["pending", "shipped"],
+            "orders": {
+                "indexes": [{"name": "idx_orders_uncompleted", "partial": True}]
             },
+            "data_checks": [
+                {"table": "users", "check": "split_names"},
+                {"table": "products", "check": "numeric_prices"},
+                {"table": "users", "expected_count": 50},
+                {"table": "products", "expected_count": 20},
+                {"table": "orders", "expected_count": 100}
+            ],
         }
+
+    def reset_task(self, engine):
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS reviews CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS order_items CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS discounts CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS orders CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS products CASCADE"))
+            conn.execute(text("DROP TABLE IF EXISTS users CASCADE"))
+            
+            # Create v1 schema
+            conn.execute(text("CREATE TABLE users (id SERIAL PRIMARY KEY, fullname TEXT, email TEXT)"))
+            conn.execute(text("CREATE TABLE products (id SERIAL PRIMARY KEY, name TEXT, price TEXT)"))
+            conn.execute(text("CREATE TABLE orders (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), status TEXT, total NUMERIC)"))
+            conn.execute(text("CREATE TABLE order_items (id SERIAL PRIMARY KEY, order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), quantity INTEGER)"))
+            conn.execute(text("CREATE TABLE reviews (id SERIAL PRIMARY KEY, product_id INTEGER REFERENCES products(id), user_id INTEGER REFERENCES users(id), rating INTEGER, comment TEXT)"))
+            
+            # Seed data
+            conn.execute(text("INSERT INTO users (fullname, email) VALUES " + ", ".join([f"('User {i} Last', 'user{i}@example.com')" for i in range(50)])))
+            conn.execute(text("INSERT INTO products (name, price) VALUES " + ", ".join([f"('Product {i}', '{10.50 + i}')" for i in range(20)])))
+            conn.execute(text("INSERT INTO orders (user_id, status, total) VALUES " + ", ".join([f"({(i%50)+1}, '{'completed' if i%2==0 else 'pending'}', {100.0*i})" for i in range(100)])))

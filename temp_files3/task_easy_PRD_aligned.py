@@ -14,7 +14,7 @@ PRD Specification:
 from __future__ import annotations
 from app.tasks.base import BaseTask
 
-class EasyTask(BaseTask):
+class TaskAddColumn(BaseTask):
     task_id = "easy"
     difficulty = "easy"
     description = "Add is_verified boolean column to users table and backfill based on created_at age"

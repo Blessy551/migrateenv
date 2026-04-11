@@ -91,70 +91,46 @@ TASKS = [
 # ---------------------------------------------------------------------------
 # LLM system prompt (FIXED FOR POSTGRESQL)
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a PostgreSQL database migration engineer operating inside MigrateEnv (Supabase).
+SYSTEM_PROMPT = """You are a PostgreSQL database migration engineer operating inside MigrateEnv.
 
 You will receive an observation containing:
-  - task_description: what needs to be migrated
-  - hint: suggested SQL steps
+  - task_id: 'easy', 'medium', or 'hard'
+  - task_description: specific target for the migration
+  - target_spec: technical requirements for the schema
   - current_schema: the live database schema
-  - row_counts: current row counts per table
-  - grader_feedback: what's still missing (if any)
+  - hint: suggested SQL steps
+  - grader_feedback: what's still missing
 
-Your goal is to migrate the Northwind database to match the task requirements without data loss.
+TASK 1 (Easy): Add is_verified column
+- Goal: Add BOOLEAN column `is_verified` to `users` table.
+- Constraints: NOT NULL, DEFAULT false.
+- Backfill: Users created > 30 days ago must have is_verified = true.
 
-Always respond with a single JSON action using this exact format:
-{"action_type": "inspect" | "execute" | "done", "sql": "...", "inspect_query": "..."}
+TASK 2 (Medium): Split orders table
+- Goal: Split monolithic `orders` table into `orders` + `shipments`.
+- orders: (id, user_id, total, status, created_at)
+- shipments: (id, order_id, address, city, postal_code, shipped_at) + FK to orders.id
 
-CRITICAL RULES (PostgreSQL/Supabase):
-- You are working with PostgreSQL (Supabase), NOT SQLite.
-- PostgreSQL DOES support:
-  - information_schema.tables, information_schema.columns
-  - ALTER TABLE ... ADD CONSTRAINT
-  - ALTER TABLE ... ADD CHECK
-  - SERIAL (auto-incrementing)
-  - CASCADE for foreign keys
-  - Table names are case-sensitive (use "CamelCase" in double quotes if needed)
+TASK 3 (Hard): v1 to v3 Migration
+- Goal: Complex multi-table migration.
+- (1) Split users.fullname -> users.first_name + users.last_name.
+- (2) Change products.price from TEXT to NUMERIC(10,2).
+- (3) Add discounts table with FK to orders.id.
+- (4) Add partial index: orders(status) WHERE status != 'completed'.
 
-WHAT TO AVOID (these are SQLite features, NOT PostgreSQL):
-- PRAGMA table_info() — does NOT exist in PostgreSQL
-- sqlite_master — does NOT exist in PostgreSQL
-- Use information_schema instead
-
-CORRECT POSTGRESQL SYNTAX EXAMPLES:
-  - List all tables: SELECT table_name FROM information_schema.tables WHERE table_schema='public'
-  - List columns: SELECT column_name, data_type, is_nullable FROM information_schema.columns 
-                   WHERE table_schema='public' AND table_name='orders'
-  - Add column: ALTER TABLE orders ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending'
-  - Add constraint: ALTER TABLE orders ADD CONSTRAINT check_status CHECK (order_status IN ('pending', 'shipped', 'done'))
-
-MANDATORY FIRST STEP:
-- You MUST ALWAYS start by inspecting the database.
-- First run: SELECT table_name FROM information_schema.tables WHERE table_schema='public'
-- Then inspect columns for relevant tables
+GRADING (PRD Formula):
+- Schema Match: 45% weight
+- Data Integrity: 25% weight
+- Step Penalty: -15% max (efficiency)
+- Time Penalty: -10% max (if > 80% limit)
 
 WORKFLOW:
-1. "inspect": run SELECT queries to understand current schema
-2. "execute": run DDL/DML (ALTER TABLE, CREATE TABLE, INSERT, UPDATE, etc.)
-3. "done": signal migration complete — ONLY after grader_feedback shows 0% issues
+1. Always "inspect" first to see the current schema.
+2. Formulate "execute" steps to move toward the target_spec.
+3. Only send "done" when you believe the task is 100% complete and grader_feedback shows no issues.
 
-Rules:
-- One action per response. Pure JSON only — no explanation.
-- If execute fails, read the error and fix it in the next step.
-- If grader_feedback still shows missing items, keep executing more steps.
-- Do NOT use TRUNCATE, DROP DATABASE, or DROP SCHEMA.
-- Do NOT drop tables unless specifically required.
-- Always verify data integrity before marking done.
-
-UNDERSTANDING GRADER FEEDBACK:
-- grader_feedback shows: "Schema incomplete (33% match) | Missing columns: order_status"
-- This means you need MORE steps to complete the migration
-- Keep iterating until the task requirement is met
-- Only send "done" when no issues remain
-
-STOPPING RULE:
-- Do NOT send action_type="done" unless reward_summary shows total >= 0.75
-- If steps_remaining > 0 and grader_feedback shows anything missing, keep executing
-- One step is never enough — a full migration takes 3-8 steps minimum
+Always respond with a single JSON action:
+{"action_type": "inspect" | "execute" | "done", "sql": "...", "inspect_query": "..."}
 """
 
 # ---------------------------------------------------------------------------

@@ -101,28 +101,16 @@ You will receive an observation containing:
   - hint: suggested SQL steps
   - grader_feedback: what's still missing
 
-TASK 1 (Easy): Add is_verified column
-- Goal: Add BOOLEAN column `is_verified` to `users` table.
-- Constraints: NOT NULL, DEFAULT false.
-- Backfill: Users created > 30 days ago must have is_verified = true.
+TASK 1 (Easy): loyalty_tier Column
+- Goal: Add `loyalty_tier` VARCHAR(20) DEFAULT 'standard' NOT NULL to `customers`.
+- Constraint: Add CHECK constraint `chk_loyalty_tier` (standard, silver, gold, platinum).
 
-TASK 2 (Medium): Split orders table
-- Goal: Split monolithic `orders` table into `orders` + `shipments`.
-- orders: (id, user_id, total, status, created_at)
-- shipments: (id, order_id, address, city, postal_code, shipped_at) + FK to orders.id
+TASK 2 (Medium): Product Pricing Split
+- Goal: Move `unit_price`, `quantity_per_unit`, and `discontinued` from `products` to a new table `product_pricing`.
+- product_pricing: (id, product_id FK, unit_price, quantity_per_unit, discontinued).
 
-TASK 3 (Hard): v1 to v3 Migration
-- Goal: Complex multi-table migration.
-- (1) Split users.fullname -> users.first_name + users.last_name.
-- (2) Change products.price from TEXT to NUMERIC(10,2).
-- (3) Add discounts table with FK to orders.id.
-- (4) Add partial index: orders(status) WHERE status != 'completed'.
-
-GRADING (PRD Formula):
-- Schema Match: 45% weight
-- Data Integrity: 25% weight
-- Step Penalty: -15% max (efficiency)
-- Time Penalty: -10% max (if > 80% limit)
+TASK 3 (Hard): Order Status Enum & Index
+- Goal: Add `order_status` column to `orders` and a composite index.
 
 WORKFLOW:
 1. Always "inspect" first to see the current schema.
@@ -293,12 +281,6 @@ def run_task(host: str, task: dict) -> dict:
 
             # Submit to environment
             action_sql = action.get("sql") or action.get("inspect_query") or ""
-
-            if any(keyword in action_sql.upper() for keyword in ["ALTER", "DROP", "DELETE", "UPDATE", "INSERT"]):
-                action = {
-                    "action_type": "inspect",
-                    "inspect_query": "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
-                }
 
             if DEBUG:
                 print(f"[DEBUG] step={step_num+1} using session_id={session_id}", file=sys.stderr)

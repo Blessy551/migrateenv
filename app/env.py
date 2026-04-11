@@ -200,8 +200,6 @@ class MigrateEnv:
                 invalid_sql_count=self._invalid_sql_count,
                 redundant_step_count=self._redundant_step_count,
                 elapsed_seconds=elapsed,
-                task_id=self._task.task_id,
-                time_limit=self._task.time_limit,
             )
             self._last_grader_result = grader_result
             reward = grader_result["composite_reward"]
@@ -213,8 +211,7 @@ class MigrateEnv:
 
             # --- Check done ---
             max_steps_reached = self._step_number >= self._task.max_steps
-            # Use task-specific target reward for success
-            task_complete = reward >= getattr(self._task, 'target_reward', SUCCESS_THRESHOLD)
+            task_complete = reward >= SUCCESS_THRESHOLD
             self._done = task_complete or max_steps_reached
 
             info["grader"] = grader_result

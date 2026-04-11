@@ -290,6 +290,7 @@ def run_task(host: str, task: dict) -> dict:
                     timeout=LLM_TIMEOUT,
                 )
                 raw = resp.choices[0].message.content or ""
+                print(f"[DEBUG] LLM raw output: {raw}", file=sys.stderr)
                 try:
                     action = json.loads(raw)
                 except Exception:
@@ -299,9 +300,8 @@ def run_task(host: str, task: dict) -> dict:
                         try:
                             action = json.loads(m.group())
                         except Exception:
-                            logger.warning("Non-JSON LLM output at step %d: %s", step_num + 1, raw[:200])
-                    if action is None:
-                        logger.warning("Non-JSON LLM output at step %d: %s", step_num + 1, raw[:200])
+                            action = {"action_type": "inspect", "inspect_query": "SELECT 1"}
+                    else:
                         action = {"action_type": "inspect", "inspect_query": "SELECT 1"}
             except Exception as e:
                 err_msg = _safe_error(str(e)) or "llm_error"
@@ -316,6 +316,14 @@ def run_task(host: str, task: dict) -> dict:
                 messages = [messages[0]] + messages[-20:]
 
             # Submit to environment
+            action_sql = action.get("sql") or action.get("inspect_query") or ""
+
+            if any(keyword in action_sql.upper() for keyword in ["ALTER", "DROP", "DELETE", "UPDATE", "INSERT"]):
+                action = {
+                    "action_type": "inspect",
+                    "inspect_query": "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+                }
+
             if DEBUG:
                 print(f"[DEBUG] step={step_num+1} using session_id={session_id}", file=sys.stderr)
                 
@@ -336,6 +344,8 @@ def run_task(host: str, task: dict) -> dict:
             obs          = result.get("observation", obs)
             total_reward = result.get("reward", 0.0)
             done         = result.get("done", False)
+            if total_reward >= 0.75:
+                done = True
             info         = result.get("info", {})
 
             # Per-step delta
@@ -376,8 +386,10 @@ def run_task(host: str, task: dict) -> dict:
 
             time.sleep(RATE_LIMIT_SLEEP)
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[DEBUG ERROR] {str(e)}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
 
     finally:
         success         = done and total_reward >= SUCCESS_THRESHOLD

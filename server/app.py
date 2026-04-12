@@ -1,5 +1,9 @@
 # server/app.py — OpenEnv multi-mode deployment entry point
-# This re-exports the FastAPI app from app.main for openenv validate compatibility.
+import uvicorn
 from app.main import app
 
-__all__ = ["app"]
+def main():
+    uvicorn.run(app, host="0.0.0.0", port=7860)
+
+if __name__ == "__main__":
+    main()

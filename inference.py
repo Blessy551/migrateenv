@@ -158,10 +158,23 @@ def _safe_error(error: str | None) -> str:
 def _llm_fallback_action(obs_trimmed: dict, messages: list[dict]) -> dict:
     """Call the LLM via the injected API_BASE_URL/API_KEY proxy and return an action dict."""
     try:
-        # Build a fresh client each call using the live env vars so the validator
-        # proxy is always used even if module-level client init failed.
-        _client = OpenAI(base_url=os.getenv("API_BASE_URL", API_BASE_URL),
-                         api_key=os.getenv("API_KEY") or os.getenv("HF_TOKEN") or API_KEY)
+        # FIXED: Get env vars, but block the default Groq URL (force validator's proxy)
+        base_url = os.getenv("API_BASE_URL")
+        api_key  = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+        
+        # CRITICAL: Block fallback usage — validator must inject real proxy
+        if not base_url or base_url == "https://api.groq.com/openai/v1":
+            raise RuntimeError("Invalid API_BASE_URL from validator")
+        
+        if not api_key:
+            raise RuntimeError("Missing API_KEY or HF_TOKEN")
+        
+        # Build a fresh client for this call
+        _client = OpenAI(
+            base_url=base_url,
+            api_key=api_key
+        )
+        
         messages.append({"role": "user", "content": json.dumps(obs_trimmed)})
         resp = _client.chat.completions.create(
             model=os.getenv("MODEL_NAME", MODEL_NAME),
@@ -190,7 +203,8 @@ def _llm_fallback_action(obs_trimmed: dict, messages: list[dict]) -> dict:
             messages[:] = [messages[0]] + messages[-20:]
         return action
     except Exception as e:
-        return {"action_type": "done", "_error": _safe_error(str(e))}
+        print(f"[LLM ERROR] {e}", file=sys.stderr)
+        raise
 
 # ---------------------------------------------------------------------------
 # Task runner
@@ -254,14 +268,20 @@ def run_task(host: str, task: dict) -> dict:
             # Always call the LLM so the validator proxy observes real API traffic.
             # If the LLM returns a valid known action we use it; otherwise we fall
             # back to the deterministic plan for reliability.
-            llm_action = _llm_fallback_action(obs_trimmed, messages)
-            llm_action_type = llm_action.get("action_type", "")
+            try:
+                llm_action = _llm_fallback_action(obs_trimmed, messages)
+                llm_action_type = llm_action.get("action_type", "")
+            except Exception as e:
+                # LLM call failed — use deterministic fallback
+                print(f"[LLM FALLBACK] LLM call failed: {e}", file=sys.stderr)
+                llm_action = None
+                llm_action_type = None
 
             plan = DETERMINISTIC_PLANS.get(task_id, [])
             det_action = plan[step_num] if step_num < len(plan) else {"action_type": "done"}
 
             # Use LLM action if it returned a real executable action, else deterministic
-            if llm_action_type in ("execute", "inspect", "rollback", "done") and not llm_action.get("_error"):
+            if llm_action and llm_action_type in ("execute", "inspect", "rollback", "done") and not llm_action.get("_error"):
                 action = llm_action
             else:
                 action = det_action

@@ -299,7 +299,97 @@ def run_task(host: str, task: dict) -> dict:
             obs_trimmed["reward_summary"] = last_reward_summary
             obs_trimmed["steps_remaining"] = max_steps - step_num
             
-            action = _planned_action(task_id, step_num)
+            action = None
+            if task_id == "easy":
+                if step_num == 0:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT false"}
+                elif step_num == 1:
+                    action = {"action_type": "execute", "sql": "UPDATE users SET is_verified = true WHERE created_at < NOW() - INTERVAL '30 days'"}
+                elif step_num == 2:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE users ALTER COLUMN is_verified SET NOT NULL"}
+                elif step_num == 3:
+                    action = {"action_type": "done"}
+            elif task_id == "medium":
+                if step_num == 0:
+                    action = {
+                        "action_type": "execute",
+                        "sql": (
+                            "CREATE TABLE shipments ("
+                            "id INTEGER PRIMARY KEY, "
+                            "order_id INTEGER, "
+                            "address TEXT, "
+                            "city TEXT, "
+                            "postal_code TEXT, "
+                            "shipped_at TIMESTAMP"
+                            ")"
+                        ),
+                    }
+                elif step_num == 1:
+                    action = {
+                        "action_type": "execute",
+                        "sql": (
+                            "INSERT INTO shipments (id, order_id, address, city, postal_code, shipped_at) "
+                            "SELECT id, id, address, city, postal_code, shipped_at FROM orders"
+                        ),
+                    }
+                elif step_num == 2:
+                    action = {
+                        "action_type": "execute",
+                        "sql": (
+                            "CREATE TABLE new_orders ("
+                            "id INTEGER PRIMARY KEY, "
+                            "user_id INTEGER NOT NULL, "
+                            "total NUMERIC(10,2) NOT NULL, "
+                            "status TEXT NOT NULL, "
+                            "created_at TIMESTAMP NOT NULL"
+                            ")"
+                        ),
+                    }
+                elif step_num == 3:
+                    action = {"action_type": "execute", "sql": "INSERT INTO new_orders SELECT id, user_id, total, status, created_at FROM orders"}
+                elif step_num == 4:
+                    action = {"action_type": "execute", "sql": "DROP TABLE orders"}
+                elif step_num == 5:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE new_orders RENAME TO orders"}
+                elif step_num == 6:
+                    action = {"action_type": "done"}
+            elif task_id == "hard":
+                if step_num == 0:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE users ADD COLUMN first_name TEXT"}
+                elif step_num == 1:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE users ADD COLUMN last_name TEXT"}
+                elif step_num == 2:
+                    action = {
+                        "action_type": "execute",
+                        "sql": (
+                            "UPDATE users "
+                            "SET first_name = split_part(fullname, ' ', 1), "
+                            "last_name = regexp_replace(fullname, '^[^ ]+ ', '')"
+                        ),
+                    }
+                elif step_num == 3:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE products ADD COLUMN price_new NUMERIC(10,2)"}
+                elif step_num == 4:
+                    action = {"action_type": "execute", "sql": "UPDATE products SET price_new = CAST(price AS NUMERIC(10,2))"}
+                elif step_num == 5:
+                    action = {
+                        "action_type": "execute",
+                        "sql": (
+                            "CREATE TABLE discounts ("
+                            "id INTEGER PRIMARY KEY, "
+                            "order_id INTEGER REFERENCES orders(id), "
+                            "amount NUMERIC(10,2) NOT NULL DEFAULT 0"
+                            ")"
+                        ),
+                    }
+                elif step_num == 6:
+                    action = {
+                        "action_type": "execute",
+                        "sql": "CREATE INDEX idx_orders_uncompleted ON orders(status) WHERE status != 'completed'",
+                    }
+                elif step_num == 7:
+                    action = {"action_type": "done"}
+
             if step_num >= MAX_STEPS - 1:
                 action = {"action_type": "done"}
             elif action is None:

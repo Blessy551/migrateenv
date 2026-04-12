@@ -330,6 +330,13 @@ class MigrateEnv:
             row_counts = {}
 
         initial_data = self._task.get_initial_observation_data() if self._task else {}
+        hint = ""
+        if self._task:
+            try:
+                hint = self._task.get_hint()
+            except:
+                hint = ""
+                
         return Observation(
             task_id=self._task.task_id,
             task_description=self._task.description,

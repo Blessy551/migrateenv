@@ -27,13 +27,8 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN required")
-
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
-)
+# client is initialised inside __main__ so importing this file never crashes
+client = None
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -204,6 +199,8 @@ def _planned_action(task_id: str, step_num: int) -> dict | None:
 
 def _llm_fallback_action(obs_trimmed: dict, messages: list[dict]) -> dict:
     try:
+        if client is None:
+            return {"action_type": "done"}
         messages.append({"role": "user", "content": json.dumps(obs_trimmed)})
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -258,10 +255,10 @@ def run_task(host: str, task: dict) -> dict:
         reset_resp = api_reset(host, task_id)
         session_id = reset_resp.get("session_id")
         obs = reset_resp.get("observation", reset_resp)
-        
+
         if DEBUG:
             print(f"[DEBUG] session_id initialized: {session_id}", file=sys.stderr)
-            
+
         time.sleep(3)
         step_start = time.time()  # start timer AFTER reset so time_limit isn't eaten by DB seeding
     except Exception as e:
@@ -290,12 +287,12 @@ def run_task(host: str, task: dict) -> dict:
             schema = obs.get("current_schema", {})
             trimmed_schema = {t: v for t, v in schema.items() if t in focus} if focus else schema
             obs_trimmed = {**obs, "current_schema": trimmed_schema}
-            
+
             # Include feedback so LLM knows what's missing
             obs_trimmed["grader_feedback"] = last_feedback
             obs_trimmed["reward_summary"] = last_reward_summary
             obs_trimmed["steps_remaining"] = max_steps - step_num
-            
+
             action = None
             if task_id == "easy":
                 if step_num == 0:
@@ -343,13 +340,13 @@ def run_task(host: str, task: dict) -> dict:
 
             if elapsed > time_limit:
                 action = {"action_type": "done"}
-            
+
             action_type = action.get("action_type", "execute")
             actions_taken.append(action)
 
             if DEBUG:
                 print(f"[DEBUG] step={step_num+1} using session_id={session_id}", file=sys.stderr)
-                
+
             try:
                 result = api_step(host, action, session_id)
             except Exception as e:
@@ -459,7 +456,7 @@ def main() -> list[dict]:
     MAX_WAIT = 60
     waited   = 0
     last_error = None
-    
+
     while waited < MAX_WAIT:
         try:
             if args.debug:
@@ -494,5 +491,17 @@ def main() -> list[dict]:
 
     return results
 
+
 if __name__ == "__main__":
+    # Validate HF_TOKEN here, not at import time, so the script can be
+    # safely imported/inspected by the validator without crashing.
+    if HF_TOKEN is None:
+        print("[END] success=false steps=0 rewards=0.00", flush=True)
+        raise ValueError("HF_TOKEN environment variable is required")
+
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=HF_TOKEN,
+    )
+
     main()

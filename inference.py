@@ -45,7 +45,7 @@ LLM_TIMEOUT       = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 RATE_LIMIT_SLEEP  = 2.0
 BENCHMARK         = "migrateenv"
 DEBUG             = "--debug" in sys.argv
-MAX_STEPS         = 8
+MAX_STEPS         = 10
 
 # Task definitions
 TASKS = [

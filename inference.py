@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Environment variables
 # ---------------------------------------------------------------------------
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN")  # API_KEY = validator, HF_TOKEN = local fallback
 

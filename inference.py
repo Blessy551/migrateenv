@@ -243,7 +243,7 @@ def run_task(host: str, task: dict) -> dict:
     max_steps    = min(task["max_steps"], MAX_STEPS)
     time_limit   = task["time_limit"]
 
-    step_start       = time.time()
+    step_start       = None
     total_reward     = 0.0
     reward_breakdown = {}
     actions_taken    = []
@@ -263,6 +263,7 @@ def run_task(host: str, task: dict) -> dict:
             print(f"[DEBUG] session_id initialized: {session_id}", file=sys.stderr)
             
         time.sleep(3)
+        step_start = time.time()  # start timer AFTER reset so time_limit isn't eaten by DB seeding
     except Exception as e:
         print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
         print(f"[END] success=false steps=0 rewards=0.00", flush=True)
@@ -282,7 +283,7 @@ def run_task(host: str, task: dict) -> dict:
 
     try:
         for step_num in range(max_steps):
-            elapsed = time.time() - step_start
+            elapsed = time.time() - (step_start or time.time())
 
             # Build observation — include grader feedback!
             focus  = obs.get("focus_tables", [])
@@ -424,7 +425,7 @@ def run_task(host: str, task: dict) -> dict:
         "score":      round(total_reward, 4),
         "breakdown":  reward_breakdown,
         "steps_used": min(len(actions_taken), max_steps),
-        "elapsed":    round(time.time() - step_start, 1),
+        "elapsed":    round(time.time() - (step_start or time.time()), 1),
         "success":    success,
         "actions":    [a.get("sql") or a.get("inspect_query", "") for a in actions_taken],
     }

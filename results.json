@@ -1,0 +1,72 @@
+[
+  {
+    "task_id": "easy",
+    "label": "Task 1 - Add column (easy)",
+    "score": 1.0,
+    "breakdown": {
+      "total": 1.0,
+      "schema_match": 1.0,
+      "data_integrity": 1.0,
+      "fk_integrity": 1.0,
+      "efficiency": 0.6
+    },
+    "steps_used": 4,
+    "elapsed": 67.2,
+    "success": true,
+    "actions": [
+      "ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT false",
+      "UPDATE users SET is_verified = true WHERE created_at < NOW() - INTERVAL '30 days'",
+      "ALTER TABLE users ALTER COLUMN is_verified SET NOT NULL",
+      ""
+    ]
+  },
+  {
+    "task_id": "medium",
+    "label": "Task 2 - Table split (medium)",
+    "score": 0.875,
+    "breakdown": {
+      "total": 0.875,
+      "schema_match": 1.0,
+      "data_integrity": 1.0,
+      "fk_integrity": 0.5,
+      "efficiency": 0.65
+    },
+    "steps_used": 7,
+    "elapsed": 154.1,
+    "success": true,
+    "actions": [
+      "CREATE TABLE shipments (id INTEGER PRIMARY KEY, order_id INTEGER, address TEXT, city TEXT, postal_code TEXT, shipped_at TIMESTAMP)",
+      "INSERT INTO shipments (id, order_id, address, city, postal_code, shipped_at) SELECT id, id, address, city, postal_code, shipped_at FROM orders",
+      "CREATE TABLE new_orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, total NUMERIC(10,2) NOT NULL, status TEXT NOT NULL, created_at TIMESTAMP NOT NULL)",
+      "INSERT INTO new_orders SELECT id, user_id, total, status, created_at FROM orders",
+      "DROP TABLE orders",
+      "ALTER TABLE new_orders RENAME TO orders",
+      ""
+    ]
+  },
+  {
+    "task_id": "hard",
+    "label": "Task 3 - Version upgrade (hard)",
+    "score": 0.95,
+    "breakdown": {
+      "total": 0.95,
+      "schema_match": 1.0,
+      "data_integrity": 1.0,
+      "fk_integrity": 1.0,
+      "efficiency": 0.7333
+    },
+    "steps_used": 8,
+    "elapsed": 239.9,
+    "success": true,
+    "actions": [
+      "ALTER TABLE users ADD COLUMN first_name TEXT",
+      "ALTER TABLE users ADD COLUMN last_name TEXT",
+      "UPDATE users SET first_name = split_part(fullname, ' ', 1), last_name = regexp_replace(fullname, '^[^ ]+ ', '')",
+      "ALTER TABLE products ADD COLUMN price_new NUMERIC(10,2)",
+      "UPDATE products SET price_new = CAST(price AS NUMERIC(10,2))",
+      "CREATE TABLE discounts (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), amount NUMERIC(10,2) NOT NULL DEFAULT 0)",
+      "CREATE INDEX idx_orders_uncompleted ON orders(status) WHERE status != 'completed'",
+      ""
+    ]
+  }
+]

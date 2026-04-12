@@ -9,11 +9,9 @@ import time
 import json
 import argparse
 import logging
-import traceback
 
 import httpx
 from openai import OpenAI
-from rich.console import Console
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -21,9 +19,6 @@ load_dotenv()
 # Silence all loggers
 logging.disable(logging.CRITICAL)
 logger = logging.getLogger(__name__)
-
-# Summary table only
-console = Console(stderr=True)
 
 # ---------------------------------------------------------------------------
 # Environment variables
@@ -33,7 +28,7 @@ MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 
 if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
+    raise ValueError("HF_TOKEN required")
 
 client = OpenAI(
     base_url=API_BASE_URL,
@@ -50,6 +45,7 @@ LLM_TIMEOUT       = float(os.environ.get("LLM_TIMEOUT", "30.0"))
 RATE_LIMIT_SLEEP  = 2.0
 BENCHMARK         = "migrateenv"
 DEBUG             = "--debug" in sys.argv
+MAX_STEPS         = 8
 
 # Task definitions
 TASKS = [
@@ -244,12 +240,11 @@ def run_task(host: str, task: dict) -> dict:
     """Run a single task."""
     task_id      = task["id"]
     label        = task["label"]
-    max_steps    = task["max_steps"]
+    max_steps    = min(task["max_steps"], MAX_STEPS)
     time_limit   = task["time_limit"]
 
     step_start       = time.time()
     total_reward     = 0.0
-    prev_reward      = 0.0
     reward_breakdown = {}
     actions_taken    = []
     step_rewards     = []
@@ -305,7 +300,9 @@ def run_task(host: str, task: dict) -> dict:
             obs_trimmed["steps_remaining"] = max_steps - step_num
             
             action = _planned_action(task_id, step_num)
-            if action is None:
+            if step_num >= MAX_STEPS - 1:
+                action = {"action_type": "done"}
+            elif action is None:
                 action = _llm_fallback_action(obs_trimmed, messages)
 
             action_type = action.get("action_type", "execute")
@@ -334,10 +331,7 @@ def run_task(host: str, task: dict) -> dict:
             info         = result.get("info", {})
             final_task_complete = bool(info.get("task_complete", False))
 
-            # Per-step delta
-            step_delta  = round(total_reward - prev_reward, 2)
-            step_rewards.append(step_delta)
-            prev_reward = total_reward
+            step_rewards.append(round(total_reward, 2))
 
             # Grader breakdown
             grader = info.get("grader", {})
@@ -374,8 +368,6 @@ def run_task(host: str, task: dict) -> dict:
 
     except Exception as e:
         print(f"[DEBUG ERROR] {str(e)}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
 
     finally:
         success         = done and (final_task_complete or total_reward >= SUCCESS_THRESHOLD)

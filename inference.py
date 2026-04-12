@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN     = os.getenv("HF_TOKEN")
+# Accept API_KEY (injected by the hackathon validator) with HF_TOKEN as fallback
+API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+HF_TOKEN     = API_KEY  # kept for backwards-compat references below
 
 # client is initialised inside __main__ so importing this file never crashes
 client = None
@@ -374,8 +376,8 @@ def main() -> list[dict]:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        if not HF_TOKEN:
-            print("[ERROR] HF_TOKEN is not set", file=sys.stderr)
+        if not API_KEY:
+            print("[ERROR] Neither API_KEY nor HF_TOKEN is set", file=sys.stderr)
             print("[END] success=false steps=0 rewards=0.00", flush=True)
             sys.exit(1)
 
@@ -384,7 +386,7 @@ if __name__ == "__main__":
             print("[END] success=false steps=0 rewards=0.00", flush=True)
             sys.exit(1)
 
-        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
         main()
 

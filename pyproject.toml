@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "migrateenv"
+version = "1.0.0"
+description = "OpenEnv-compliant environment for database schema migration tasks"
+requires-python = ">=3.11"
+authors = [
+    { name = "Blessy-karen" }
+]
+keywords = ["openenv", "database", "migration", "sql", "real-world"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+
+[tool.openenv]
+name = "migrateenv"
+version = "1.0.0"
+entrypoint = "app.main:app"

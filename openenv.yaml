@@ -1,9 +1,15 @@
 name: MigrateEnv
 version: "1.0.0"
 description: >
-  An OpenEnv-compliant reinforcement learning environment for evaluating
-  LLM agent performance on real-world PostgreSQL database schema migrations
-  using the Northwind dataset.
+  A session-based environment for evaluating agents on real-world SQL schema
+  migration tasks with deterministic graders and incremental rewards.
+author: "Blessy-karen"
+tags:
+  - openenv
+  - database
+  - migration
+  - sql
+  - real-world
 
 interface:
   reset:
@@ -11,18 +17,24 @@ interface:
     path: /reset
     body:
       task_id: string
-    returns: observation
+    returns:
+      session_id: string
+      observation: object
 
   step:
     method: POST
     path: /step
     body:
-      sql: string
+      session_id: string
+      action_type: string
+      sql: string?
+      inspect_query: string?
     returns:
       observation: object
       reward: float
       done: boolean
       info: object
+      reward_model: object
 
   state:
     method: GET
@@ -31,43 +43,37 @@ interface:
 
 endpoints:
   - GET /health
+  - GET /openenv.yaml
   - GET /tasks
   - GET /grader
-  - GET /baseline
 
 tasks:
   - id: easy
     difficulty: easy
-    description: Add loyalty_tier column + CHECK constraint to customers table
+    description: Add and backfill is_verified on users
     max_steps: 10
     target_reward: 0.95
 
   - id: medium
     difficulty: medium
-    description: Normalize products table by splitting pricing into product_pricing
+    description: Split a mixed orders table into orders plus shipments
     max_steps: 20
     target_reward: 0.95
 
   - id: hard
     difficulty: hard
-    description: Multi-table migration on orders — add status column, composite index, and audit_log table
+    description: Apply a multi-table version upgrade across users, products, and orders
     max_steps: 30
-    target_reward: 0.95
+    target_reward: 0.80
 
 database:
   engine: postgresql
-  dataset: Northwind
+  dataset: task-seeded
   version: "PostgreSQL 15"
-  schema_source: db/northwind.sql
-  reset_strategy: full_reload
+  reset_strategy: task_seed_reset
 
 grader:
-  weights:
-    schema_match: 0.35
-    data_integrity: 0.30
-    relational_integrity: 0.20
-    step_efficiency: 0.10
-    time_score: 0.05
+  model: task_specific
   penalties:
     invalid_sql: -0.05
     redundant_step: -0.02

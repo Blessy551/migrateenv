@@ -6,10 +6,11 @@ import logging
 import time
 import os
 from typing import Any
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.env import MigrateEnv
 from app.models import (
@@ -57,6 +58,16 @@ SESSIONS = {}
 # Keep a global dummy env for backwards-compatible /health queries
 env = MigrateEnv()
 _startup_time = time.time()
+OPENENV_PATH = Path(__file__).resolve().parent.parent / "openenv.yaml"
+
+
+def _get_active_env(session_id: str | None = None) -> MigrateEnv:
+    if session_id and session_id in SESSIONS:
+        return SESSIONS[session_id]["env"]
+    if SESSIONS:
+        last_session_id = next(reversed(SESSIONS))
+        return SESSIONS[last_session_id]["env"]
+    return env
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -67,7 +78,8 @@ def health():
     """Health check — returns database connectivity and environment status."""
     db_ok = ping_db()
     uptime = round(time.time() - _startup_time, 1)
-    current_task = env._task.task_id if env._task else None
+    active_env = _get_active_env()
+    current_task = active_env._task.task_id if active_env._task else None
     return HealthResponse(
         status="ok" if db_ok else "degraded",
         database_connected=db_ok,
@@ -141,7 +153,13 @@ def step(request: StepRequest):
     print(f"[DEBUG][BACKEND] Step BEFORE: env_id={id(env_instance)}", file=sys.stderr)
     
     try:
-        result = env_instance.step(request.sql)
+        result = env_instance.step(
+            {
+                "action_type": request.action_type,
+                "sql": request.sql,
+                "inspect_query": request.inspect_query,
+            }
+        )
         print(f"[DEBUG][BACKEND] Step AFTER: env_id={id(env_instance)} done={result.done} reward={result.reward}", file=sys.stderr)
         return result
     except RuntimeError as e:
@@ -171,6 +189,7 @@ def step(request: StepRequest):
                     "step_number": 0,
                     "max_steps": 0,
                     "target_description": "",
+                    "last_action_result": str(e),
                     "focus_tables": [],
                 },
             },
@@ -178,18 +197,19 @@ def step(request: StepRequest):
 
 
 @app.get("/state", response_model=EnvState, tags=["env"])
-def state():
+def state(session_id: str | None = None):
     """Get current internal state of the environment."""
-    return env.state()
+    return _get_active_env(session_id).state()
 
 
 @app.get("/grader", tags=["evaluation"])
-def grader():
+def grader(session_id: str | None = None):
     """
     Get the current grader scores for the active task.
     Returns 0.0 for all scores if no task is active.
     """
-    if not env._initialized or env._task is None:
+    active_env = _get_active_env(session_id)
+    if not active_env._initialized or active_env._task is None:
         return {
             "schema_score": 0.0,
             "data_score": 0.0,
@@ -201,13 +221,14 @@ def grader():
             "details": {"note": "No active task. Call POST /reset first."},
         }
 
-    last = env.get_last_grader_result()
+    last = active_env.get_last_grader_result()
     if last is None:
         # Force a grade against current state
-        env_state = env.state()
-        requirements = env._task.get_target_schema_requirements()
-        result = env._grader.compute(
-            engine=env._engine,
+        env_state = active_env.state()
+        requirements = active_env._task.get_target_schema_requirements()
+        result = active_env._grader.compute(
+            engine=active_env._engine,
+            task_id=active_env._task.task_id,
             requirements=requirements,
             step_number=env_state.step_number,
             max_steps=env_state.max_steps,
@@ -218,6 +239,12 @@ def grader():
         return result
 
     return last
+
+
+@app.get("/openenv.yaml", tags=["system"])
+def get_openenv_yaml():
+    """Serve the OpenEnv metadata file."""
+    return FileResponse(OPENENV_PATH, media_type="text/yaml", filename="openenv.yaml")
 
 # ---------------------------------------------------------------------------
 # Startup event

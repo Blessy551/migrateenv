@@ -19,16 +19,13 @@ from app.graders.composite import CompositeGrader
 from app.tasks import TASK_REGISTRY
 from app.tasks.base import BaseTask
 from app.models import (
-    Observation, StepResult, EnvState,
+    Action, Observation, Reward, StepResult, EnvState,
 )
 
 logger = logging.getLogger(__name__)
 
-# Minimum composite reward to mark a task as successfully completed.
-# Set lower than 1.0 to account for progressive scoring where timing /
-# efficiency sub-scores prevent a perfect result on a fully correct migration.
-# Override at runtime:  SUCCESS_THRESHOLD=0.85 uvicorn app.main:app
-SUCCESS_THRESHOLD: float = float(os.environ.get("SUCCESS_THRESHOLD", "0.75"))
+# Override at runtime if a task omits an explicit reward target.
+SUCCESS_THRESHOLD: float = float(os.environ.get("SUCCESS_THRESHOLD", "0.85"))
 # Patterns considered truly dangerous (not just invalid).
 # These are a subset of what the sanitizer blocks; we detect them here to
 # assign info["dangerous"]=True rather than the standard -0.05 penalty.
@@ -68,6 +65,11 @@ class MigrateEnv:
         self._last_reward: Optional[float] = None
         self._last_grader_result: Optional[dict] = None
         self._last_sql: Optional[str] = None
+        self._last_action_result: str = ""
+        self._last_action_error: Optional[str] = None
+        self._inspect_count = 0
+        self._execute_count = 0
+        self._rollback_bonus = 0.0
 
         # Schema snapshot cache (avoid double DB queries per step)
         self._cached_schema: Optional[dict] = None
@@ -91,7 +93,7 @@ class MigrateEnv:
         logger.info(f"[ENV] Resetting with task_id='{task_id}'")
 
         # --- Reload Northwind tables (Supabase: no DROP/CREATE DATABASE) ---
-        initialize_db(database_url=DATABASE_URL)
+        initialize_db(task_id=task_id, database_url=DATABASE_URL)
 
         # Re-bind engine so any stale connections are cleared
         reconnect(DATABASE_URL)
@@ -109,12 +111,18 @@ class MigrateEnv:
         self._start_time = time.time()
         self._last_reward = None
         self._last_grader_result = None
+        self._last_sql = None
+        self._last_action_result = "Environment reset successfully."
+        self._last_action_error = None
+        self._inspect_count = 0
+        self._execute_count = 0
+        self._rollback_bonus = 0.0
 
         return self._build_observation()
 
-    def step(self, sql: str) -> StepResult:
+    def step(self, action: str | Action) -> StepResult:
         """
-        Execute a SQL action, compute reward, return StepResult.
+        Execute an action, compute reward, return StepResult.
         """
         import traceback
 
@@ -125,10 +133,78 @@ class MigrateEnv:
 
         try:
             self._step_number += 1
-            info: dict[str, Any] = {"step": self._step_number, "sql": sql}
+            parsed_action = self._normalize_action(action)
+            info: dict[str, Any] = {
+                "step": self._step_number,
+                "action_type": parsed_action.action_type,
+                "sql": parsed_action.sql,
+                "inspect_query": parsed_action.inspect_query,
+            }
 
-            # --- Empty SQL guard (before sanitizer) ---
-            if not sql or not sql.strip():
+            if parsed_action.action_type == "inspect":
+                self._inspect_count += 1
+                self._last_action_result = self._handle_inspect(parsed_action.inspect_query)
+                reward, reward_model, grader_result = self._grade_current_state()
+                if self._inspect_count > 5 and self._execute_count == 0:
+                    reward = max(0.0, reward - 0.02)
+                    reward_model.total = round(reward, 4)
+                    info["inspect_penalty"] = 0.02
+                self._last_reward = reward
+                self._last_grader_result = grader_result
+                info["grader"] = grader_result
+                info["task_complete"] = False
+                obs = self._build_observation()
+                return StepResult(
+                    observation=obs,
+                    reward=round(reward, 4),
+                    done=False,
+                    info=info,
+                    reward_model=reward_model,
+                )
+
+            if parsed_action.action_type == "rollback":
+                self._rollback_bonus = 0.05
+                self._last_action_result = "Rollback requested. No transactional rollback available; bonus recorded."
+                reward, reward_model, grader_result = self._grade_current_state()
+                reward = min(1.0, reward + self._rollback_bonus)
+                reward_model.total = round(reward, 4)
+                reward_model.rollback_bonus = self._rollback_bonus
+                self._last_reward = reward
+                self._last_grader_result = grader_result
+                info["grader"] = grader_result
+                obs = self._build_observation()
+                return StepResult(
+                    observation=obs,
+                    reward=round(reward, 4),
+                    done=False,
+                    info=info,
+                    reward_model=reward_model,
+                )
+
+            if parsed_action.action_type == "done":
+                reward, reward_model, grader_result = self._grade_current_state()
+                target_reward = getattr(self._task, "target_reward", SUCCESS_THRESHOLD) or SUCCESS_THRESHOLD
+                task_complete = reward >= target_reward
+                self._last_reward = reward
+                self._last_grader_result = grader_result
+                self._done = True
+                self._last_action_result = "Final grading completed."
+                info["grader"] = grader_result
+                info["task_complete"] = task_complete
+                info["final_grading"] = True
+                obs = self._build_observation()
+                return StepResult(
+                    observation=obs,
+                    reward=round(reward, 4),
+                    done=True,
+                    info=info,
+                    reward_model=reward_model,
+                )
+
+            sql = parsed_action.sql or ""
+            if not sql.strip():
+                self._last_action_result = "Empty SQL"
+                self._last_action_error = "Empty SQL"
                 info["error"] = "Empty SQL"
                 obs = self._build_observation()
                 return StepResult(
@@ -136,13 +212,14 @@ class MigrateEnv:
                     reward=0.0,
                     done=False,
                     info=info,
+                    reward_model=Reward(total=0.0),
                 )
 
-            # --- Sanitize ---
             is_safe, reason = sanitize_sql(sql)
             if not is_safe:
+                self._last_action_error = reason
+                self._last_action_result = reason
                 if _is_dangerous(sql):
-                    # Truly dangerous — signal explicitly, no incremental penalty
                     logger.warning("Dangerous SQL blocked: %s", sql[:200])
                     info["error"] = reason
                     info["dangerous"] = True
@@ -153,31 +230,32 @@ class MigrateEnv:
                         reward=0.0,
                         done=False,
                         info=info,
+                        reward_model=Reward(total=0.0),
                     )
-                else:
-                    self._invalid_sql_count += 1
-                    reward = max(0.0, (self._last_reward or 0.0) - 0.05)
-                    info["error"] = f"SQL blocked by sanitizer: {reason}"
-                    info["sql_blocked"] = True
-                    obs = self._build_observation()
-                    return StepResult(
-                        observation=obs,
-                        reward=round(reward, 4),
-                        done=False,
-                        info=info,
-                    )
+                self._invalid_sql_count += 1
+                reward = max(0.0, (self._last_reward or 0.0) - 0.05)
+                info["error"] = f"SQL blocked by sanitizer: {reason}"
+                info["sql_blocked"] = True
+                obs = self._build_observation()
+                return StepResult(
+                    observation=obs,
+                    reward=round(reward, 4),
+                    done=False,
+                    info=info,
+                    reward_model=Reward(total=round(reward, 4)),
+                )
 
-            # --- Redundant step check ---
             if sql.strip() == (self._last_sql or "").strip():
                 self._redundant_step_count += 1
             self._last_sql = sql.strip()
 
-            # --- Execute SQL ---
             exec_info = self._execute_sql(sql)
             info.update(exec_info)
 
             if not exec_info.get("success", False):
                 self._invalid_sql_count += 1
+                self._last_action_error = exec_info.get("error", "SQL execution failed")
+                self._last_action_result = self._last_action_error
                 reward = max(0.0, (self._last_reward or 0.0) - 0.05)
                 obs = self._build_observation()
                 return StepResult(
@@ -185,44 +263,28 @@ class MigrateEnv:
                     reward=round(reward, 4),
                     done=False,
                     info=info,
+                    reward_model=Reward(total=round(reward, 4)),
                 )
 
-            # --- Grade ---
-            requirements = self._task.get_target_schema_requirements()
-            elapsed = time.time() - (self._start_time or time.time())
-
-            grader_result = self._grader.compute(
-                engine=self._engine,
-                requirements=requirements,
-                step_number=self._step_number,
-                max_steps=self._task.max_steps,
-                invalid_sql_count=self._invalid_sql_count,
-                redundant_step_count=self._redundant_step_count,
-                elapsed_seconds=elapsed,
-            )
-            self._last_grader_result = grader_result
-            reward = grader_result["composite_reward"]
-
-
-
+            self._execute_count += 1
+            self._last_action_error = None
+            self._last_action_result = "SQL executed successfully."
+            self._cached_schema = None
+            reward, reward_model, grader_result = self._grade_current_state()
             self._last_reward = reward
-            self._cached_schema = None  # grader consumed DB state; clear cache
+            self._last_grader_result = grader_result
 
-            # --- Check done ---
             max_steps_reached = self._step_number >= self._task.max_steps
-            task_complete = reward >= SUCCESS_THRESHOLD
-            self._done = task_complete or max_steps_reached
-
             info["grader"] = grader_result
-            info["task_complete"] = task_complete
+            info["task_complete"] = False
             info["max_steps_reached"] = max_steps_reached
-
             obs = self._build_observation()
             return StepResult(
                 observation=obs,
                 reward=round(reward, 4),
-                done=self._done,
+                done=max_steps_reached,
                 info=info,
+                reward_model=reward_model,
             )
 
         except Exception as e:
@@ -242,12 +304,14 @@ class MigrateEnv:
                     step_number=self._step_number,
                     max_steps=self._task.max_steps if self._task else 0,
                     target_description="",
+                    last_action_result=self._last_action_result,
                 )
             return StepResult(
                 observation=obs,
                 reward=0.0,
                 done=False,
                 info={"error": str(e), "step": self._step_number},
+                reward_model=Reward(total=0.0),
             )
 
     def state(self) -> EnvState:
@@ -311,6 +375,7 @@ class MigrateEnv:
                 step_number=0,
                 max_steps=0,
                 target_description="",
+                last_action_result=self._last_action_result,
             )
 
         try:
@@ -347,8 +412,51 @@ class MigrateEnv:
             step_number=self._step_number,
             max_steps=self._task.max_steps,
             target_description=self._task.target_description,
+            last_action_result=self._last_action_result,
             focus_tables=initial_data.get("focus_tables", []),
         )
+
+    def _normalize_action(self, action: str | Action | dict[str, Any]) -> Action:
+        if isinstance(action, Action):
+            return action
+        if isinstance(action, dict):
+            return Action(**action)
+        return Action(action_type="execute", sql=action)
+
+    def _handle_inspect(self, inspect_query: Optional[str]) -> str:
+        focus_tables = []
+        if self._task:
+            focus_tables = self._task.get_initial_observation_data().get("focus_tables", [])
+        inspected = ", ".join(focus_tables) if focus_tables else "all tables"
+        if inspect_query:
+            return f"Inspection request '{inspect_query}' returned schema and row counts for {inspected}."
+        return f"Returned schema and row counts for {inspected}."
+
+    def _grade_current_state(self) -> tuple[float, Reward, dict[str, Any]]:
+        requirements = self._task.get_target_schema_requirements()
+        elapsed = time.time() - (self._start_time or time.time())
+        grader_result = self._grader.compute(
+            engine=self._engine,
+            task_id=self._task.task_id,
+            requirements=requirements,
+            step_number=self._step_number,
+            max_steps=self._task.max_steps,
+            invalid_sql_count=self._invalid_sql_count,
+            redundant_step_count=self._redundant_step_count,
+            elapsed_seconds=elapsed,
+            rollback_bonus=self._rollback_bonus,
+        )
+        reward = grader_result["composite_reward"]
+        reward_model = Reward(
+            total=round(reward, 4),
+            schema_match=grader_result.get("schema_score", 0.0),
+            data_integrity=grader_result.get("data_score", 0.0),
+            fk_integrity=grader_result.get("fk_score", 0.0),
+            step_efficiency=grader_result.get("efficiency_score", 0.0),
+            time_penalty=grader_result.get("penalties", {}).get("time_penalty", 0.0),
+            rollback_bonus=grader_result.get("rollback_bonus", self._rollback_bonus),
+        )
+        return reward, reward_model, grader_result
 
     def get_last_grader_result(self) -> Optional[dict]:
         return self._last_grader_result

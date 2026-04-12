@@ -181,7 +181,7 @@ class TaskEasyGrader:
                     SELECT COUNT(*) as total_old_users,
                            COUNT(CASE WHEN is_verified = true THEN 1 END) as correctly_set
                     FROM users
-                    WHERE created_at > NOW() - INTERVAL '30 days'
+                    WHERE created_at < NOW() - INTERVAL '30 days'
                 """))
                 
                 total_old_users, correctly_set = result.fetchone()

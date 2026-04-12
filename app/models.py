@@ -2,7 +2,7 @@
 Pydantic models for all FastAPI request/response bodies.
 """
 from __future__ import annotations
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -15,8 +15,26 @@ class ResetRequest(BaseModel):
 
 
 class StepRequest(BaseModel):
-    sql: str = Field(..., description="Single SQL statement to execute as the agent's action")
+    action_type: Literal["inspect", "execute", "rollback", "done"] = Field(
+        default="execute",
+        description="Type of action to perform",
+    )
+    sql: Optional[str] = Field(
+        default=None,
+        description="Single SQL statement to execute as the agent's action",
+    )
+    inspect_query: Optional[str] = Field(
+        default=None,
+        description="High-level schema/data inspection request",
+    )
     session_id: str = Field(..., description="Session ID for environment state continuity")
+
+
+class Action(BaseModel):
+    action_type: Literal["inspect", "execute", "rollback", "done"]
+    sql: Optional[str] = None
+    inspect_query: Optional[str] = None
+
 
 class ResetResponse(BaseModel):
     session_id: str
@@ -54,7 +72,18 @@ class Observation(BaseModel):
     step_number: int
     max_steps: int
     target_description: str
+    last_action_result: str = Field(default="", description="Plain-text result of the most recent action")
     focus_tables: list[str] = Field(default_factory=list, description="Tables the agent should focus on for this task")
+
+
+class Reward(BaseModel):
+    total: float = Field(..., ge=0.0, le=1.0)
+    schema_match: float = Field(default=0.0, ge=0.0, le=1.0)
+    data_integrity: float = Field(default=0.0, ge=0.0, le=1.0)
+    fk_integrity: float = Field(default=0.0, ge=0.0, le=1.0)
+    step_efficiency: float = Field(default=0.0, ge=0.0, le=1.0)
+    time_penalty: float = Field(default=0.0, ge=0.0)
+    rollback_bonus: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class StepResult(BaseModel):
@@ -62,6 +91,7 @@ class StepResult(BaseModel):
     reward: float = Field(..., ge=0.0, le=1.0)
     done: bool
     info: dict[str, Any]
+    reward_model: Optional[Reward] = None
 
 
 class GraderResult(BaseModel):

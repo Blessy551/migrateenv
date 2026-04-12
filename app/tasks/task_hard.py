@@ -1,28 +1,5 @@
 """
-HARD TASK — Multi-table migration on Northwind 'orders' table.
-
-Goal:
-  1. ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending'
-  2. UPDATE order_status based on shipped_date:
-       shipped_date IS NULL → 'pending'
-       shipped_date IS NOT NULL → 'shipped'
-  3. ADD CHECK CONSTRAINT chk_order_status (order_status IN ('pending','shipped','cancelled'))
-  4. CREATE COMPOSITE INDEX idx_orders_customer_date ON orders(customer_id, order_date)
-  5. CREATE TABLE audit_log (
-         log_id SERIAL PRIMARY KEY,
-         table_name VARCHAR(50),
-         operation VARCHAR(20),
-         performed_at TIMESTAMP DEFAULT NOW(),
-         note TEXT
-     )
-  6. INSERT a record into audit_log documenting this migration
-
-Success criteria:
-  - orders.order_status column exists (830 rows preserved)
-  - CHECK constraint chk_order_status present
-  - Composite index idx_orders_customer_date exists
-  - audit_log table exists with ≥ 1 row
-  - No FK violations
+HARD TASK - Apply a multi-table version upgrade.
 """
 from app.tasks.base import BaseTask
 
@@ -31,73 +8,36 @@ class HardTask(BaseTask):
     task_id = "hard"
     difficulty = "hard"
     description = (
-        "Multi-table migration on the Northwind 'orders' table: "
-        "(1) Add order_status VARCHAR(20) column computed from shipped_date, "
-        "(2) Add CHECK constraint on order_status values, "
-        "(3) Create composite index on (customer_id, order_date), "
-        "(4) Create audit_log table and record the migration. "
-        "All 830 original order rows must be preserved."
+        "Upgrade a small commerce schema by splitting users.fullname into first_name and last_name, "
+        "coercing product prices into a numeric column, adding a discounts table, and creating "
+        "an index for non-completed orders without losing data."
     )
     target_description = (
-        "orders has order_status column (correct values), CHECK constraint, composite index. "
-        "audit_log table exists with ≥ 1 row. 830 order rows preserved."
+        "users has first_name and last_name populated, products has numeric price data, discounts exists, "
+        "and orders has an index for unfinished orders while seeded row counts remain intact."
     )
     max_steps = 30
-    target_reward = 0.95
+    target_reward = 0.80
 
     def get_initial_observation_data(self):
         return {
-            "focus_tables": ["orders"],
-            "northwind_note": (
-                "orders has 830 rows. shipped_date is NULL for pending orders. "
-                "employee_id FK → employees, customer_id FK → customers, ship_via FK → shippers."
-            ),
+            "focus_tables": ["users", "products", "orders", "discounts"],
+            "seed_note": "users, products, orders, order_items, and reviews are preloaded for the upgrade scenario.",
             "task_goal": self.description,
         }
 
     def get_hint(self) -> str:
         return (
-            "Step 1: ALTER TABLE orders ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending'; "
-            "Step 2: UPDATE orders SET order_status = CASE WHEN shipped_date IS NULL THEN 'pending' "
-            "ELSE 'shipped' END; "
-            "Step 3: ALTER TABLE orders ADD CONSTRAINT chk_order_status "
-            "CHECK (order_status IN ('pending', 'shipped', 'cancelled')); "
-            "Step 4: CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date); "
-            "Step 5: CREATE TABLE audit_log (log_id SERIAL PRIMARY KEY, table_name VARCHAR(50), "
-            "operation VARCHAR(20), performed_at TIMESTAMP DEFAULT NOW(), note TEXT); "
-            "Step 6: INSERT INTO audit_log (table_name, operation, note) VALUES "
-            "('orders', 'MIGRATION', 'Added order_status column, status index, and audit_log');"
+            "Step 1: Add users.first_name and users.last_name. "
+            "Step 2: Backfill them from fullname. "
+            "Step 3: Add products.price_new NUMERIC and cast existing price into it. "
+            "Step 4: Create discounts and an index for unfinished orders. "
+            "Step 5: Mark the migration complete with done."
         )
 
     def get_target_schema_requirements(self):
         return {
-            "table": "orders",
-            "required_columns": [
-                {
-                    "name": "order_status",
-                    "type_contains": "VARCHAR",
-                    "nullable": False,
-                }
-            ],
-            "required_check_constraints": [
-                {
-                    "name": "chk_order_status",
-                    "sqltext_contains": "order_status",
-                }
-            ],
-            "required_indexes": [
-                {
-                    "name": "idx_orders_customer_date",
-                    "table": "orders",
-                }
-            ],
-            "required_tables": ["orders", "audit_log"],
-            "required_row_counts": {
-                "orders": 830,
-            },
-            "audit_log_min_rows": 1,
-            "required_status_values": {
-                "query": "SELECT DISTINCT LOWER(order_status) FROM orders ORDER BY 1",
-                "must_contain": ["pending", "shipped"],
-            },
+            "task_grader": "hard",
+            "required_tables": ["users", "products", "orders", "discounts"],
+            "required_row_counts": {"users": 50, "products": 20, "orders": 100},
         }

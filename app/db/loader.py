@@ -1,187 +1,225 @@
 """
-Database loader — resets the Northwind schema by running the SQL dump
-directly against the existing database (no DROP/CREATE DATABASE).
-
-Uses SQLAlchemy engine (not raw psycopg2) so it is compatible with
-both Supabase session-mode (port 5432) and transaction-mode (port 6543)
-poolers, as well as local SQLite for development.
-
-The northwind.sql file contains DROP TABLE IF EXISTS statements for every
-Northwind table, so we just need to:
-  1. Drop task-created tables (product_pricing, audit_log, etc.)
-  2. Execute northwind.sql (which drops + recreates all Northwind tables)
+Database loader for deterministic task-specific seed data.
 """
 import os
-import re
 import logging
-from pathlib import Path
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
-SQL_DUMP_PATH = Path(__file__).parent.parent.parent / "db" / "northwind.sql"
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError(
-        "DATABASE_URL environment variable is required (Supabase connection string)"
+        "DATABASE_URL environment variable is required"
     )
 
-# Normalise postgres:// → postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Extra tables created by tasks that must be cleaned up on reset
-_TASK_EXTRA_TABLES = [
-    "product_pricing",
-    "audit_log",
-]
-
 
 def _get_loader_engine(database_url: str):
-    """
-    Create a SQLAlchemy engine suitable for bulk loading.
-
-    Uses NullPool so it works with both session-mode (5432) and
-    transaction-mode (6543) Supabase poolers, as well as local SQLite.
-    """
-    if database_url.startswith("sqlite"):
-        return create_engine(database_url, echo=False)
-
+    hostname = (urlparse(database_url).hostname or "").lower()
+    is_local = hostname in {"localhost", "127.0.0.1", "host.docker.internal"}
     return create_engine(
         database_url,
         poolclass=NullPool,
         connect_args={
-            "sslmode": "require",
             "connect_timeout": 30,
+            **({} if is_local else {"sslmode": "require"}),
         },
         echo=False,
     )
 
 
-def _split_sql_statements(sql_content: str) -> list[str]:
-    """
-    Split a SQL dump into individual statements, skipping blanks and comments.
-    Handles semicolons inside string literals by using a simple state machine.
-    """
-    statements = []
-    current: list[str] = []
-    in_string = False
-    string_char = ""
-    i = 0
-    text_len = len(sql_content)
-
-    while i < text_len:
-        ch = sql_content[i]
-
-        # Track string literals
-        if not in_string and ch in ("'", '"'):
-            in_string = True
-            string_char = ch
-        elif in_string and ch == string_char:
-            # Check for escaped quote (doubled)
-            if i + 1 < text_len and sql_content[i + 1] == string_char:
-                current.append(ch)
-                i += 1
-            else:
-                in_string = False
-        elif not in_string and ch == '-' and i + 1 < text_len and sql_content[i + 1] == '-':
-            # Single-line comment — skip to end of line
-            while i < text_len and sql_content[i] != '\n':
-                i += 1
-            continue
-        elif not in_string and ch == ';':
-            stmt = ''.join(current).strip()
-            if stmt:
-                statements.append(stmt)
-            current = []
-            i += 1
-            continue
-
-        current.append(ch)
-        i += 1
-
-    # Last statement (no trailing semicolon)
-    leftover = ''.join(current).strip()
-    if leftover:
-        statements.append(leftover)
-
-    return statements
+def _drop_public_tables(conn) -> None:
+    tables = conn.execute(
+        text(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = 'public' ORDER BY tablename"
+        )
+    ).fetchall()
+    for row in tables:
+        conn.execute(text(f'DROP TABLE IF EXISTS "{row[0]}" CASCADE'))
 
 
-def initialize_db(
-    sql_path: Path = SQL_DUMP_PATH,
-    database_url: str = DATABASE_URL,
-) -> None:
-    """
-    Reset the database to a clean Northwind state.
+def _seed_easy(conn) -> None:
+    conn.execute(text("""
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            email TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+    """))
+    for i in range(50):
+        conn.execute(
+            text(
+                "INSERT INTO users (id, email, created_at) "
+                "VALUES (:id, :email, NOW() - (:days || ' days')::interval)"
+            ),
+            {"id": i + 1, "email": f"user{i + 1}@example.com", "days": i},
+        )
 
-    Uses SQLAlchemy so it works with both Supabase pooler modes and
-    local SQLite — no raw psycopg2 needed.
-    """
+
+def _seed_medium(conn) -> None:
+    conn.execute(text("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            total NUMERIC(10, 2) NOT NULL,
+            status TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            postal_code TEXT NOT NULL,
+            shipped_at TIMESTAMP NULL
+        )
+    """))
+    statuses = ["pending", "processing", "completed"]
+    for i in range(200):
+        conn.execute(
+            text("""
+                INSERT INTO orders (
+                    id, user_id, total, status, created_at, address, city, postal_code, shipped_at
+                ) VALUES (
+                    :id, :user_id, :total, :status, NOW() - (:days || ' days')::interval,
+                    :address, :city, :postal_code,
+                    CASE WHEN :shipped THEN NOW() - (:ship_days || ' days')::interval ELSE NULL END
+                )
+            """),
+            {
+                "id": i + 1,
+                "user_id": (i % 50) + 1,
+                "total": round(20 + (i * 1.5), 2),
+                "status": statuses[i % len(statuses)],
+                "days": i % 30,
+                "address": f"{i + 1} Market Street",
+                "city": f"City {i % 10}",
+                "postal_code": f"100{i % 10}",
+                "shipped": i % 3 != 0,
+                "ship_days": (i % 20) + 1,
+            },
+        )
+
+
+def _seed_hard(conn) -> None:
+    conn.execute(text("""
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            fullname TEXT NOT NULL,
+            email TEXT NOT NULL
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            price TEXT NOT NULL
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            status TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE order_items (
+            id INTEGER PRIMARY KEY,
+            order_id INTEGER NOT NULL REFERENCES orders(id),
+            product_id INTEGER NOT NULL REFERENCES products(id),
+            quantity INTEGER NOT NULL
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE reviews (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            product_id INTEGER NOT NULL REFERENCES products(id),
+            rating INTEGER NOT NULL
+        )
+    """))
+    conn.execute(
+        text("INSERT INTO users (id, fullname, email) VALUES (:id, :fullname, :email)"),
+        [
+            {"id": i + 1, "fullname": f"User {i} Last", "email": f"user{i + 1}@example.com"}
+            for i in range(50)
+        ],
+    )
+    conn.execute(
+        text("INSERT INTO products (id, name, price) VALUES (:id, :name, :price)"),
+        [
+            {"id": i + 1, "name": f"Product {i + 1}", "price": f"{10 + (i * 2):.2f}"}
+            for i in range(20)
+        ],
+    )
+    statuses = ["pending", "processing", "completed", "cancelled"]
+    conn.execute(
+        text("""
+            INSERT INTO orders (id, user_id, status, created_at)
+            VALUES (:id, :user_id, :status, NOW() - (:days || ' days')::interval)
+        """),
+        [
+            {"id": i + 1, "user_id": (i % 50) + 1, "status": statuses[i % len(statuses)], "days": i % 40}
+            for i in range(100)
+        ],
+    )
+    conn.execute(
+        text("""
+            INSERT INTO order_items (id, order_id, product_id, quantity)
+            VALUES (:id, :order_id, :product_id, :quantity)
+        """),
+        [
+            {"id": i + 1, "order_id": i + 1, "product_id": (i % 20) + 1, "quantity": (i % 4) + 1}
+            for i in range(100)
+        ],
+    )
+    conn.execute(
+        text("""
+            INSERT INTO reviews (id, user_id, product_id, rating)
+            VALUES (:id, :user_id, :product_id, :rating)
+        """),
+        [
+            {"id": i + 1, "user_id": (i % 50) + 1, "product_id": (i % 20) + 1, "rating": (i % 5) + 1}
+            for i in range(50)
+        ],
+    )
+
+
+def initialize_db(task_id: str, database_url: str = DATABASE_URL) -> None:
     engine = _get_loader_engine(database_url)
-    is_sqlite = database_url.startswith("sqlite")
-
-    # Step 1 — drop task-specific tables not in northwind.sql
-    with engine.begin() as conn:
-        for table in _TASK_EXTRA_TABLES:
-            try:
-                conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
-                logger.info("Dropped task table: %s", table)
-            except Exception as drop_err:
-                logger.warning("Could not drop %s: %s", table, drop_err)
-
-    # Step 2 — run the full northwind.sql dump
-    if not sql_path.exists():
-        raise FileNotFoundError(f"Northwind SQL dump not found at: {sql_path}")
-
-    with open(sql_path, "r", encoding="utf-8") as f:
-        sql_content = f.read()
-
-    with engine.begin() as conn:
-        if is_sqlite:
-            statements = _split_sql_statements(sql_content)
-            logger.info("Executing %d SQL statements from northwind.sql (SQLite)", len(statements))
-            for stmt in statements:
-                try:
-                    conn.execute(text(stmt))
-                except Exception as e:
-                    logger.warning("Statement failed (continuing): %s | %.120s", e, stmt)
-        else:
-            logger.info("Executing bulk SQL dump (PostgreSQL)")
-            try:
-                # PostgreSQL natively handles multi-statement strings efficiently
-                conn.execute(text(sql_content))
-            except Exception as e:
-                logger.error("Bulk SQL dump failed: %s", e)
-                raise
-
-    logger.info("Northwind SQL dump executed successfully.")
-    engine.dispose()
+    try:
+        with engine.begin() as conn:
+            _drop_public_tables(conn)
+            if task_id == "easy":
+                _seed_easy(conn)
+            elif task_id == "medium":
+                _seed_medium(conn)
+            elif task_id == "hard":
+                _seed_hard(conn)
+            else:
+                raise ValueError(f"Unknown task_id '{task_id}'")
+        logger.info("Seeded task database for %s", task_id)
+    finally:
+        engine.dispose()
 
 
 def get_table_row_counts(database_url: str = DATABASE_URL) -> dict:
     engine = _get_loader_engine(database_url)
-    is_postgres = not database_url.startswith("sqlite")
     counts = {}
     try:
         with engine.connect() as conn:
-            if is_postgres:
-                result = conn.execute(
-                    text(
-                        "SELECT tablename FROM pg_tables "
-                        "WHERE schemaname = 'public' ORDER BY tablename"
-                    )
+            result = conn.execute(
+                text(
+                    "SELECT tablename FROM pg_tables "
+                    "WHERE schemaname = 'public' ORDER BY tablename"
                 )
-                tables = [row[0] for row in result.fetchall()]
-            else:
-                result = conn.execute(
-                    text("SELECT name FROM sqlite_master WHERE type='table'")
-                )
-                tables = [row[0] for row in result.fetchall()]
-
+            )
+            tables = [row[0] for row in result.fetchall()]
             for table in tables:
                 try:
                     r = conn.execute(text(f'SELECT COUNT(*) FROM "{table}"'))

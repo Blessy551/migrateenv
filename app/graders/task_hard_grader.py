@@ -46,14 +46,16 @@ class TaskHardGrader:
             return 0.0, {"error": str(e)}
 
     def _check_schema(self, engine: Engine) -> float:
-        # Simplified: check for discounts table and users.first_name
+        # Simplified: check for discounts table and users.first_name/last_name
         with engine.connect() as conn:
             tables = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")).fetchall()
             tablenames = {t[0] for t in tables}
-            if "discounts" not in tablenames: return 0.5
+            if "discounts" not in tablenames:
+                return 0.25
             cols = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users'")).fetchall()
             colnames = {c[0] for c in cols}
-            if "first_name" not in colnames or "fullname" in colnames: return 0.5
+            if "first_name" not in colnames or "last_name" not in colnames:
+                return 0.5
             return 1.0
 
     def _check_data_integrity(self, engine: Engine) -> float:
@@ -62,28 +64,30 @@ class TaskHardGrader:
                 u = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
                 p = conn.execute(text("SELECT COUNT(*) FROM products")).scalar()
                 o = conn.execute(text("SELECT COUNT(*) FROM orders")).scalar()
-                if u == 50 and p == 20 and o == 100: return 1.0
-                return 0.5
+                if u == 50 and p == 20 and o == 100:
+                    return 1.0
+                return 0.25
         except: return 0.0
 
     def _check_name_split(self, engine: Engine) -> float:
         try:
             with engine.connect() as conn:
-                row = conn.execute(text("SELECT first_name, last_name FROM users LIMIT 1")).fetchone()
-                if row and row[0] == 'User' and row[1] == '0': return 1.0 # based on seed 'User {i} Last'
-                # Seed was 'User {i} Last', but split_part on space might give 'User' and '0' if it was 'User 0 Last'
-                # Wait, seed was: f"('User {i} Last', ...)" -> space at index 5 and 8? 
-                # split_part('User 0 Last', ' ', 1) -> 'User'
-                # split_part('User 0 Last', ' ', 2) -> '0'
-                if row and row[0] == 'User': return 1.0
+                row = conn.execute(text("SELECT first_name, last_name FROM users ORDER BY id LIMIT 1")).fetchone()
+                if row and row[0] == 'User' and row[1] == '0 Last':
+                    return 1.0
+                if row and row[0] == 'User' and row[1]:
+                    return 0.75
                 return 0.0
         except: return 0.0
 
     def _check_price_coercion(self, engine: Engine) -> float:
         try:
             with engine.connect() as conn:
-                res = conn.execute(text("SELECT data_type FROM information_schema.columns WHERE table_name='products' AND column_name='price'")).scalar()
-                if res in ('numeric', 'decimal'): return 1.0
+                res = conn.execute(text("SELECT data_type FROM information_schema.columns WHERE table_name='products' AND column_name='price_new'")).scalar()
+                if res in ('numeric', 'decimal'):
+                    non_null = conn.execute(text("SELECT COUNT(*) FROM products WHERE price_new IS NOT NULL")).scalar()
+                    total = conn.execute(text("SELECT COUNT(*) FROM products")).scalar()
+                    return 1.0 if non_null == total else 0.5
                 return 0.0
         except: return 0.0
 

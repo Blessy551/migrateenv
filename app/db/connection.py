@@ -60,13 +60,15 @@ def _build_connect_args(url: str) -> dict:
     """Return psycopg2 connect_args with SSL for non-SQLite URLs."""
     if url.startswith("sqlite"):
         return {}
+    hostname = (urlparse(url).hostname or "").lower()
+    is_local = hostname in {"localhost", "127.0.0.1", "host.docker.internal"}
     return {
-        "sslmode": "require",
         "connect_timeout": 30,
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5,
+        **({} if is_local else {"sslmode": "require"}),
     }
 
 

@@ -29,7 +29,7 @@ def test_endpoint(host: str, endpoint: str, method: str = "GET", timeout: float 
 
 def main():
     parser = argparse.ArgumentParser(description="Test MigrateEnv server connectivity")
-    parser.add_argument("--host", default="http://localhost:8000", help="Server URL")
+    parser.add_argument("--host", default="http://localhost:7860", help="Server URL")
     parser.add_argument("--timeout", type=float, default=10.0, help="Request timeout in seconds")
     args = parser.parse_args()
 

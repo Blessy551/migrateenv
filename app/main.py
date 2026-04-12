@@ -137,20 +137,19 @@ def step(request: StepRequest):
     Execute a SQL action in the environment.
     """
     session_id = request.session_id
-    import sys
-    print(f"[DEBUG][BACKEND] Received step with session_id={session_id}", file=sys.stderr)
+    logger.debug("Received step with session_id=%s", session_id)
     
     if session_id not in SESSIONS:
-        print(f"[ERROR][BACKEND] session_id {session_id} not found!", file=sys.stderr)
+        logger.error("session_id %s not found", session_id)
         # Return error using standard StepResult structure to avoid breaking agent parsing
         return JSONResponse(
             status_code=400,
             content={"error": "Invalid session_id"}
         )
 
-    print(f"[DEBUG][BACKEND] session_id {session_id} found, continuing episode", file=sys.stderr)
+    logger.debug("session_id %s found, continuing episode", session_id)
     env_instance = SESSIONS[session_id]["env"]
-    print(f"[DEBUG][BACKEND] Step BEFORE: env_id={id(env_instance)}", file=sys.stderr)
+    logger.debug("Step BEFORE: env_id=%s", id(env_instance))
     
     try:
         result = env_instance.step(
@@ -160,7 +159,12 @@ def step(request: StepRequest):
                 "inspect_query": request.inspect_query,
             }
         )
-        print(f"[DEBUG][BACKEND] Step AFTER: env_id={id(env_instance)} done={result.done} reward={result.reward}", file=sys.stderr)
+        logger.debug(
+            "Step AFTER: env_id=%s done=%s reward=%s",
+            id(env_instance),
+            result.done,
+            result.reward,
+        )
         return result
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))

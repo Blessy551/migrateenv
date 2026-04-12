@@ -4,6 +4,7 @@ FastAPI application — exposes all 7 OpenEnv endpoints.
 from __future__ import annotations
 import logging
 import time
+import uuid
 import os
 from typing import Any, Optional
 from pathlib import Path
@@ -51,14 +52,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import uuid
 # Global dictionary for session tracking
-SESSIONS = {}
+SESSIONS: dict = {}
 
-# Keep a global dummy env for backwards-compatible /health queries
-env = MigrateEnv()
+# ---------------------------------------------------------------------------
+# FIX: Do NOT instantiate MigrateEnv() at module level.
+# Doing so triggers app/db/connection.py imports which previously crashed
+# when DATABASE_URL was missing. Now we create a fallback env lazily.
+# ---------------------------------------------------------------------------
+_fallback_env: MigrateEnv | None = None
 _startup_time = time.time()
 OPENENV_PATH = Path(__file__).resolve().parent.parent / "openenv.yaml"
+
+
+def _get_fallback_env() -> MigrateEnv:
+    """Return (and lazily create) the module-level fallback env instance."""
+    global _fallback_env
+    if _fallback_env is None:
+        _fallback_env = MigrateEnv()
+    return _fallback_env
 
 
 def _get_active_env(session_id: str | None = None) -> MigrateEnv:
@@ -67,7 +79,7 @@ def _get_active_env(session_id: str | None = None) -> MigrateEnv:
     if SESSIONS:
         last_session_id = next(reversed(SESSIONS))
         return SESSIONS[last_session_id]["env"]
-    return env
+    return _get_fallback_env()
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -146,10 +158,9 @@ def step(request: StepRequest):
     """
     session_id = request.session_id
     logger.debug("Received step with session_id=%s", session_id)
-    
+
     if session_id not in SESSIONS:
         logger.error("session_id %s not found", session_id)
-        # Return error using standard StepResult structure to avoid breaking agent parsing
         return JSONResponse(
             status_code=400,
             content={"error": "Invalid session_id"}
@@ -158,7 +169,7 @@ def step(request: StepRequest):
     logger.debug("session_id %s found, continuing episode", session_id)
     env_instance = SESSIONS[session_id]["env"]
     logger.debug("Step BEFORE: env_id=%s", id(env_instance))
-    
+
     try:
         result = env_instance.step(
             {
@@ -179,7 +190,6 @@ def step(request: StepRequest):
     except Exception as e:
         import traceback
         logger.error(f"Step failed unexpectedly: {e}\n{traceback.format_exc()}")
-        # Return a guaranteed safe response — never a 500
         return JSONResponse(
             status_code=200,
             content={
@@ -235,7 +245,6 @@ def grader(session_id: str | None = None):
 
     last = active_env.get_last_grader_result()
     if last is None:
-        # Force a grade against current state
         env_state = active_env.state()
         requirements = active_env._task.get_target_schema_requirements()
         result = active_env._grader.compute(

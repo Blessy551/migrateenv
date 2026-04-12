@@ -10,13 +10,25 @@ from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL environment variable is required"
-    )
+# ---------------------------------------------------------------------------
+# FIX: Do NOT raise at import time if DATABASE_URL is missing.
+# Resolve it lazily inside functions that actually need it.
+# ---------------------------------------------------------------------------
 
-if DATABASE_URL.startswith("postgres://"):
+def _get_database_url() -> str:
+    """Return DATABASE_URL, normalised to postgresql://, raising only when called."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL environment variable is required")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+# Module-level alias kept for any external code that imports DATABASE_URL directly.
+# Evaluates lazily on first attribute access via the property trick below.
+DATABASE_URL: str | None = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 
@@ -53,7 +65,6 @@ def _seed_easy(conn) -> None:
             created_at TIMESTAMP NOT NULL
         )
     """))
-    # Single batched INSERT — one round trip instead of 50
     values = ", ".join(
         f"({i + 1}, 'user{i + 1}@example.com', NOW() - INTERVAL '{i} days')"
         for i in range(50)
@@ -76,7 +87,6 @@ def _seed_medium(conn) -> None:
         )
     """))
     statuses = ["pending", "processing", "completed"]
-    # Single batched INSERT — one round trip instead of 200
     values = ", ".join(
         (
             f"({i + 1}, {(i % 50) + 1}, {round(20 + (i * 1.5), 2)}, "
@@ -133,7 +143,6 @@ def _seed_hard(conn) -> None:
         )
     """))
 
-    # All batched — 5 round trips total instead of 320+
     user_values = ", ".join(
         f"({i + 1}, 'User {i} Last', 'user{i + 1}@example.com')"
         for i in range(50)
@@ -166,7 +175,9 @@ def _seed_hard(conn) -> None:
     conn.execute(text(f"INSERT INTO reviews (id, user_id, product_id, rating) VALUES {review_values}"))
 
 
-def initialize_db(task_id: str, database_url: str = DATABASE_URL) -> None:
+def initialize_db(task_id: str, database_url: str | None = None) -> None:
+    if database_url is None:
+        database_url = _get_database_url()
     engine = _get_loader_engine(database_url)
     try:
         with engine.begin() as conn:
@@ -184,7 +195,9 @@ def initialize_db(task_id: str, database_url: str = DATABASE_URL) -> None:
         engine.dispose()
 
 
-def get_table_row_counts(database_url: str = DATABASE_URL) -> dict:
+def get_table_row_counts(database_url: str | None = None) -> dict:
+    if database_url is None:
+        database_url = _get_database_url()
     engine = _get_loader_engine(database_url)
     counts = {}
     try:

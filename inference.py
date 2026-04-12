@@ -318,6 +318,8 @@ def run_task(host: str, task: dict) -> dict:
                     action = {"action_type": "execute", "sql": "DROP TABLE orders"}
                 elif step_num == 5:
                     action = {"action_type": "execute", "sql": "ALTER TABLE new_orders RENAME TO orders"}
+                elif step_num == 6:
+                    action = {"action_type": "execute", "sql": "ALTER TABLE shipments ADD CONSTRAINT fk_shipments_order FOREIGN KEY (order_id) REFERENCES orders(id)"}
                 else:
                     action = {"action_type": "done"}
             elif task_id == "hard":

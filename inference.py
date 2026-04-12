@@ -340,11 +340,7 @@ def run_task(host: str, task: dict) -> dict:
 
             if elapsed > time_limit:
                 action = {"action_type": "done"}
-            elif step_num >= MAX_STEPS - 1:
-                action = {"action_type": "done"}
-            elif action is None:
-                continue
-
+            
             action_type = action.get("action_type", "execute")
             actions_taken.append(action)
 

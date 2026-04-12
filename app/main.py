@@ -73,6 +73,12 @@ def _get_active_env(session_id: str | None = None) -> MigrateEnv:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/", tags=["system"])
+def root():
+    """Root endpoint — returns service info."""
+    return {"name": "MigrateEnv", "version": "1.0.0", "status": "ok"}
+
+
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health():
     """Health check — returns database connectivity and environment status."""

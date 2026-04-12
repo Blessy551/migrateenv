@@ -53,14 +53,12 @@ def _seed_easy(conn) -> None:
             created_at TIMESTAMP NOT NULL
         )
     """))
-    for i in range(50):
-        conn.execute(
-            text(
-                "INSERT INTO users (id, email, created_at) "
-                "VALUES (:id, :email, NOW() - (:days || ' days')::interval)"
-            ),
-            {"id": i + 1, "email": f"user{i + 1}@example.com", "days": i},
-        )
+    # Single batched INSERT — one round trip instead of 50
+    values = ", ".join(
+        f"({i + 1}, 'user{i + 1}@example.com', NOW() - INTERVAL '{i} days')"
+        for i in range(50)
+    )
+    conn.execute(text(f"INSERT INTO users (id, email, created_at) VALUES {values}"))
 
 
 def _seed_medium(conn) -> None:
@@ -78,30 +76,21 @@ def _seed_medium(conn) -> None:
         )
     """))
     statuses = ["pending", "processing", "completed"]
-    for i in range(200):
-        conn.execute(
-            text("""
-                INSERT INTO orders (
-                    id, user_id, total, status, created_at, address, city, postal_code, shipped_at
-                ) VALUES (
-                    :id, :user_id, :total, :status, NOW() - (:days || ' days')::interval,
-                    :address, :city, :postal_code,
-                    CASE WHEN :shipped THEN NOW() - (:ship_days || ' days')::interval ELSE NULL END
-                )
-            """),
-            {
-                "id": i + 1,
-                "user_id": (i % 50) + 1,
-                "total": round(20 + (i * 1.5), 2),
-                "status": statuses[i % len(statuses)],
-                "days": i % 30,
-                "address": f"{i + 1} Market Street",
-                "city": f"City {i % 10}",
-                "postal_code": f"100{i % 10}",
-                "shipped": i % 3 != 0,
-                "ship_days": (i % 20) + 1,
-            },
+    # Single batched INSERT — one round trip instead of 200
+    values = ", ".join(
+        (
+            f"({i + 1}, {(i % 50) + 1}, {round(20 + (i * 1.5), 2)}, "
+            f"'{statuses[i % len(statuses)]}', NOW() - INTERVAL '{i % 30} days', "
+            f"'{i + 1} Market Street', 'City {i % 10}', '100{i % 10}', "
+            + (f"NOW() - INTERVAL '{(i % 20) + 1} days'" if i % 3 != 0 else "NULL")
+            + ")"
         )
+        for i in range(200)
+    )
+    conn.execute(text(
+        f"INSERT INTO orders (id, user_id, total, status, created_at, address, city, postal_code, shipped_at) "
+        f"VALUES {values}"
+    ))
 
 
 def _seed_hard(conn) -> None:
@@ -143,51 +132,38 @@ def _seed_hard(conn) -> None:
             rating INTEGER NOT NULL
         )
     """))
-    conn.execute(
-        text("INSERT INTO users (id, fullname, email) VALUES (:id, :fullname, :email)"),
-        [
-            {"id": i + 1, "fullname": f"User {i} Last", "email": f"user{i + 1}@example.com"}
-            for i in range(50)
-        ],
+
+    # All batched — 5 round trips total instead of 320+
+    user_values = ", ".join(
+        f"({i + 1}, 'User {i} Last', 'user{i + 1}@example.com')"
+        for i in range(50)
     )
-    conn.execute(
-        text("INSERT INTO products (id, name, price) VALUES (:id, :name, :price)"),
-        [
-            {"id": i + 1, "name": f"Product {i + 1}", "price": f"{10 + (i * 2):.2f}"}
-            for i in range(20)
-        ],
+    conn.execute(text(f"INSERT INTO users (id, fullname, email) VALUES {user_values}"))
+
+    product_values = ", ".join(
+        f"({i + 1}, 'Product {i + 1}', '{10 + (i * 2):.2f}')"
+        for i in range(20)
     )
+    conn.execute(text(f"INSERT INTO products (id, name, price) VALUES {product_values}"))
+
     statuses = ["pending", "processing", "completed", "cancelled"]
-    conn.execute(
-        text("""
-            INSERT INTO orders (id, user_id, status, created_at)
-            VALUES (:id, :user_id, :status, NOW() - (:days || ' days')::interval)
-        """),
-        [
-            {"id": i + 1, "user_id": (i % 50) + 1, "status": statuses[i % len(statuses)], "days": i % 40}
-            for i in range(100)
-        ],
+    order_values = ", ".join(
+        f"({i + 1}, {(i % 50) + 1}, '{statuses[i % len(statuses)]}', NOW() - INTERVAL '{i % 40} days')"
+        for i in range(100)
     )
-    conn.execute(
-        text("""
-            INSERT INTO order_items (id, order_id, product_id, quantity)
-            VALUES (:id, :order_id, :product_id, :quantity)
-        """),
-        [
-            {"id": i + 1, "order_id": i + 1, "product_id": (i % 20) + 1, "quantity": (i % 4) + 1}
-            for i in range(100)
-        ],
+    conn.execute(text(f"INSERT INTO orders (id, user_id, status, created_at) VALUES {order_values}"))
+
+    item_values = ", ".join(
+        f"({i + 1}, {i + 1}, {(i % 20) + 1}, {(i % 4) + 1})"
+        for i in range(100)
     )
-    conn.execute(
-        text("""
-            INSERT INTO reviews (id, user_id, product_id, rating)
-            VALUES (:id, :user_id, :product_id, :rating)
-        """),
-        [
-            {"id": i + 1, "user_id": (i % 50) + 1, "product_id": (i % 20) + 1, "rating": (i % 5) + 1}
-            for i in range(50)
-        ],
+    conn.execute(text(f"INSERT INTO order_items (id, order_id, product_id, quantity) VALUES {item_values}"))
+
+    review_values = ", ".join(
+        f"({i + 1}, {(i % 50) + 1}, {(i % 20) + 1}, {(i % 5) + 1})"
+        for i in range(50)
     )
+    conn.execute(text(f"INSERT INTO reviews (id, user_id, product_id, rating) VALUES {review_values}"))
 
 
 def initialize_db(task_id: str, database_url: str = DATABASE_URL) -> None:

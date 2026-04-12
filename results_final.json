@@ -1,0 +1,58 @@
+[
+  {
+    "task_id": "easy",
+    "label": "Task 1 \u2014 Add column (easy)",
+    "score": 0.7334,
+    "breakdown": {
+      "total": 0.7334,
+      "schema_match": 0.4,
+      "data_integrity": 1.0,
+      "fk_integrity": 1.0,
+      "efficiency": 1.0
+    },
+    "steps_used": 1,
+    "elapsed": 135.2,
+    "success": false,
+    "actions": [
+      "SELECT * FROM information_schema.columns WHERE table_name = 'customers';"
+    ]
+  },
+  {
+    "task_id": "medium",
+    "label": "Task 2 \u2014 Table split (medium)",
+    "score": 0.4935,
+    "breakdown": {
+      "total": 0.4935,
+      "schema_match": 0.4,
+      "data_integrity": 0.25,
+      "fk_integrity": 0.8,
+      "efficiency": 1.0
+    },
+    "steps_used": 1,
+    "elapsed": 146.6,
+    "success": false,
+    "actions": [
+      "SELECT * FROM products LIMIT 10"
+    ]
+  },
+  {
+    "task_id": "hard",
+    "label": "Task 3 \u2014 Multi-table migration (hard)",
+    "score": 0.7539,
+    "breakdown": {
+      "total": 0.7539,
+      "schema_match": 0.7,
+      "data_integrity": 0.75,
+      "fk_integrity": 1.0,
+      "efficiency": 1.0
+    },
+    "steps_used": 3,
+    "elapsed": 352.0,
+    "success": true,
+    "actions": [
+      "SELECT * FROM information_schema.tables WHERE table_name = 'orders';",
+      "ALTER TABLE orders ADD COLUMN order_status VARCHAR(20) NOT NULL DEFAULT 'pending';",
+      "UPDATE orders SET order_status = CASE WHEN shipped_date IS NULL THEN 'pending' ELSE 'shipped' END;"
+    ]
+  }
+]

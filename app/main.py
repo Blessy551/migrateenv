@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import os
-from typing import Any
+from typing import Any, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -107,22 +107,24 @@ def list_tasks():
 
 
 @app.post("/reset", response_model=ResetResponse, tags=["env"])
-def reset(request: ResetRequest):
+def reset(request: Optional[ResetRequest] = None):
     """
     Initialize the environment for a given task.
-    Reloads the real Northwind database from SQL dump (deterministic clean state).
+    Supports POST /reset with or without a body (OpenEnv validator compatibility).
     """
     try:
+        task_id = request.task_id if request and request.task_id else "easy"
+
         env_instance = MigrateEnv()
-        obs = env_instance.reset(request.task_id)
-        
+        obs = env_instance.reset(task_id)
+
         session_id = str(uuid.uuid4())
         SESSIONS[session_id] = {
             "env": env_instance,
             "state": obs,
         }
-        
-        logger.info(f"Reset successful for task '{request.task_id}', session: {session_id}")
+
+        logger.info(f"Reset successful for task '{task_id}', session: {session_id}")
         return ResetResponse(session_id=session_id, observation=obs)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

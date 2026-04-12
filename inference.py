@@ -39,12 +39,16 @@ logging.disable(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Environment variables
+# Environment variables  (spec: API_BASE_URL + MODEL_NAME need defaults; HF_TOKEN mandatory)
 # ---------------------------------------------------------------------------
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.1-8b-instant")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 HF_TOKEN     = os.getenv("HF_TOKEN")
-API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN")  # API_KEY = validator, HF_TOKEN = local fallback
+if HF_TOKEN is None:
+    # Per spec: HF_TOKEN is mandatory
+    raise ValueError("HF_TOKEN environment variable is required")
+# API_KEY is injected by the validator for their LiteLLM proxy — never fall back to HF_TOKEN
+API_KEY      = os.getenv("API_KEY", "")
 
 # client is initialised inside __main__ so importing this file never crashes
 client = None
@@ -158,18 +162,15 @@ def _safe_error(error: str | None) -> str:
 def _llm_fallback_action(obs_trimmed: dict, messages: list[dict]) -> dict:
     """Call the LLM via the injected API_BASE_URL/API_KEY proxy and return an action dict."""
     try:
-        # FIXED: Get env vars, but block the default Groq URL (force validator's proxy)
-        base_url = os.getenv("API_BASE_URL")
-        api_key  = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-        
-        # CRITICAL: Block fallback usage — validator must inject real proxy
-        if not base_url or base_url == "https://api.groq.com/openai/v1":
-            raise RuntimeError("Invalid API_BASE_URL from validator")
-        
+        # Use validator-injected env vars. API_KEY is the validator's proxy key.
+        # Never fall back to HF_TOKEN here — that would send calls on the wrong key.
+        base_url = API_BASE_URL                  # already read at module level with correct default
+        api_key  = os.getenv("API_KEY", "")      # strictly the validator's key, no HF_TOKEN fallback
+
         if not api_key:
-            raise RuntimeError("Missing API_KEY or HF_TOKEN")
-        
-        # Build a fresh client for this call
+            raise RuntimeError("API_KEY not set — validator must inject it")
+
+        # Build a fresh client using the validator's proxy
         _client = OpenAI(
             base_url=base_url,
             api_key=api_key
@@ -415,7 +416,7 @@ def main() -> list[dict]:
 if __name__ == "__main__":
     try:
         if not API_KEY:
-            print("[ERROR] Neither API_KEY nor HF_TOKEN is set", file=sys.stderr)
+            print("[ERROR] API_KEY environment variable not set — must be injected by validator", file=sys.stderr)
             print("[END] success=false steps=0 rewards=0.00", flush=True)
             sys.exit(1)
 
@@ -429,7 +430,7 @@ if __name__ == "__main__":
             print("[END] success=false steps=0 rewards=0.00", flush=True)
             sys.exit(1)
 
-        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        client = OpenAI(base_url=API_BASE_URL, api_key=os.getenv("API_KEY", ""))
 
         main()
 

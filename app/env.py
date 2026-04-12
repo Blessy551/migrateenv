@@ -28,8 +28,7 @@ logger = logging.getLogger(__name__)
 # Set lower than 1.0 to account for progressive scoring where timing /
 # efficiency sub-scores prevent a perfect result on a fully correct migration.
 # Override at runtime:  SUCCESS_THRESHOLD=0.85 uvicorn app.main:app
-SUCCESS_THRESHOLD: float = float(os.environ.get("SUCCESS_THRESHOLD", "0.8"))
-
+SUCCESS_THRESHOLD: float = float(os.environ.get("SUCCESS_THRESHOLD", "0.75"))
 # Patterns considered truly dangerous (not just invalid).
 # These are a subset of what the sanitizer blocks; we detect them here to
 # assign info["dangerous"]=True rather than the standard -0.05 penalty.

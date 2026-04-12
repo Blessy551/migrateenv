@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 class ResetRequest(BaseModel):
-    task_id: str = Field(..., description="Task ID to initialize: 'easy', 'medium', or 'hard'")
+    task_id: str = Field(default="easy", description="Task ID to initialize: 'easy', 'medium', or 'hard'")
 
 
 class StepRequest(BaseModel):

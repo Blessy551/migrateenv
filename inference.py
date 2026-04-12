@@ -284,10 +284,6 @@ def run_task(host: str, task: dict) -> dict:
         for step_num in range(max_steps):
             elapsed = time.time() - step_start
 
-            # Time limit guard
-            if elapsed > time_limit:
-                break
-
             # Build observation — include grader feedback!
             focus  = obs.get("focus_tables", [])
             schema = obs.get("current_schema", {})
@@ -342,10 +338,12 @@ def run_task(host: str, task: dict) -> dict:
                 else:
                     action = {"action_type": "done"}
 
-            if step_num >= MAX_STEPS - 1:
+            if elapsed > time_limit:
+                action = {"action_type": "done"}
+            elif step_num >= MAX_STEPS - 1:
                 action = {"action_type": "done"}
             elif action is None:
-                action = _llm_fallback_action(obs_trimmed, messages)
+                action = {"action_type": "done"}
 
             action_type = action.get("action_type", "execute")
             actions_taken.append(action)

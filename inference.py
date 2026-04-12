@@ -343,7 +343,7 @@ def run_task(host: str, task: dict) -> dict:
             elif step_num >= MAX_STEPS - 1:
                 action = {"action_type": "done"}
             elif action is None:
-                action = {"action_type": "done"}
+                continue
 
             action_type = action.get("action_type", "execute")
             actions_taken.append(action)
